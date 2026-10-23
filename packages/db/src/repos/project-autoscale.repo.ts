@@ -1,5 +1,5 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
-import { generateId } from "@repo/core";
+import { AppError, generateId } from "@repo/core";
 import type { AutoscaleEvent } from "@repo/core";
 import type { Database } from "../client";
 import {
@@ -26,6 +26,8 @@ export interface SetAutoscalePolicyInput {
   suspendAfterFailures: number;
   /** Operator confirms a suspended policy should resume ownership. */
   rearm?: true;
+  /** CAS precondition against the saved policy row; ignored when absent. */
+  expectedUpdatedAt?: string;
 }
 
 const FAILURE_BACKOFF_MS = (failures: number) =>
@@ -47,7 +49,10 @@ export function createAutoscaleRepo(db: Database) {
         .where(eq(projectAutoscalePolicy.enabled, 1));
     },
 
-    /** Only this path (operator, via the dashboard) may clear a suspension. */
+    /** Only this path (operator, via the dashboard) may clear a suspension.
+     *  CAS on the saved policy's updatedAt keeps two dashboard tabs from
+     *  silently overwriting each other (or an operator's re-arm from landing
+     *  on a policy the loop just re-suspended). */
     async save(
       projectId: string,
       input: SetAutoscalePolicyInput,
@@ -59,6 +64,16 @@ export function createAutoscaleRepo(db: Database) {
           .from(projectAutoscalePolicy)
           .where(owned(projectId))
           .for("update");
+        if (
+          input.expectedUpdatedAt &&
+          existing &&
+          existing.updatedAt.toISOString() !== input.expectedUpdatedAt
+        )
+          throw new AppError(
+            "The autoscaling policy changed. Reload before applying these settings.",
+            409,
+            "AUTOSCALE_POLICY_CONFLICT",
+          );
         const rearming = input.rearm === true && input.enabled;
         const values = {
           projectId,

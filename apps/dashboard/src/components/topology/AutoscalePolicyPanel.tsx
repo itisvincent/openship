@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon as UiIcon } from "@repo/ui/icons";
 import type { ProjectAutoscalePolicy, AutoscaleEvent } from "@repo/contracts";
-import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { projectAutoscaleApi } from "@/lib/api/project-autoscale";
@@ -34,7 +33,6 @@ const DEFAULTS = {
  * after a human edit or a give-up, and the event trail is the "why did it
  * scale" record. Nothing here auto-applies without an explicit save. */
 export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPolicyChanged }: Props) {
-  const { t } = useI18n();
   const [policy, setPolicy] = useState<ProjectAutoscalePolicy | null>(null);
   const [absent, setAbsent] = useState(false);
   const [events, setEvents] = useState<AutoscaleEvent[]>([]);
@@ -45,7 +43,6 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
   const [form, setForm] = useState(DEFAULTS);
   const [enabled, setEnabled] = useState(false);
   const pending = useRef(false);
-  void t;
 
   useEffect(() => {
     let current = true;

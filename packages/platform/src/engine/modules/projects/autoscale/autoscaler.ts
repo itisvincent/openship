@@ -27,6 +27,7 @@ import {
   safeErrorMessage,
   type AutoscaleEvent,
 } from "@repo/core";
+import { KubernetesApiError } from "@repo/adapters";
 import { env } from "../../../config/env";
 import { findActiveDeployment } from "../../../lib/active-deployment";
 import { withDeploymentRuntime } from "../../../lib/deployment-runtime";
@@ -86,11 +87,24 @@ export function autoscaleEligibilityReason(
  */
 async function applyScale(
   projectId: string,
-  active: NonNullable<Awaited<ReturnType<typeof findActiveDeployment>>>,
+  observedDeploymentId: string,
   desired: number,
 ): Promise<void> {
   await withLiveProjectRuntimeMutation(projectId, async (liveProject: Project) => {
-    const meta = active.meta as DeploymentMeta | null;
+    // Re-read everything the decision was made from: the release the loop
+    // observed must still BE the active release, and no build/deploy may be
+    // in flight. Both checks inside the runtime lock close the window a
+    // concurrent deploy leaves between observation and apply.
+    const { checkNoActiveBuild } = await import("../../deployments/build.service");
+    await checkNoActiveBuild(projectId);
+    const current = await findActiveDeployment(liveProject);
+    if (!current || current.id !== observedDeploymentId || !current.containerId)
+      throw new AppError(
+        "The active release changed while scaling it. No replica change was applied.",
+        409,
+        "CLUSTER_WORKLOAD_CONFLICT",
+      );
+    const meta = current.meta as DeploymentMeta | null;
     if (meta?.clusterId !== liveProject.clusterId)
       throw new AppError(
         "The project's cluster target changed while scaling it. No replica change was applied.",
@@ -104,14 +118,14 @@ async function applyScale(
         409,
         "CLUSTER_CONFIG_REQUIRED",
       );
-    await withDeploymentRuntime(active, async (rt) => {
+    await withDeploymentRuntime(current, async (rt) => {
       if (!rt.supports("scaleInPlace") || !rt.scaleInPlace)
         throw new AppError(
           "The active release's runtime cannot change its instance count in place.",
           409,
           "CLUSTER_WORKLOAD_UNSUPPORTED",
         );
-      await rt.scaleInPlace(active.containerId!, desired);
+      await rt.scaleInPlace(current.containerId!, desired);
     });
     // Commit the new intent with the same single-writer write every scale
     // uses, so dashboards, preconditions and the next release all agree.
@@ -122,7 +136,7 @@ async function applyScale(
       { ...saved, replicas: desired },
       liveProject.updatedAt.toISOString(),
     );
-    await repos.deployment.patchMetaReplicas(active.id, desired);
+    await repos.deployment.patchMetaReplicas(current.id, desired);
   });
 }
 
@@ -155,11 +169,12 @@ export async function runAutoscaleTick(): Promise<{
       if (outcome) results.push(outcome);
     } catch (error) {
       // A conflict is a hold, not a failure: someone else holds the lock, the
-      // workload CAS, or changed preconditions. Re-read next tick; never burn
-      // backoff or suspend on it.
+      // workload CAS, or a Kubernetes optimistic-concurrency precondition.
+      // Re-read next tick; never burn backoff or suspend on these.
       if (
         error instanceof AppError &&
-        ["CLUSTER_WORKLOAD_CONFLICT", "CLUSTER_RUNTIME_CONFLICT"].includes(error.code ?? "")
+        (["CLUSTER_WORKLOAD_CONFLICT", "CLUSTER_RUNTIME_CONFLICT"].includes(error.code ?? "") ||
+          (error instanceof KubernetesApiError && error.statusCode === 409))
       ) {
         results.push({ projectId: policy.projectId, held: "another operation holds the project" });
         continue;
@@ -319,7 +334,7 @@ async function scaleOnePolicy(
     ),
     id: `dec-${Date.now()}`,
   };
-  await applyScale(projectId, active, desired);
+  await applyScale(projectId, active.id, desired);
   await repos.autoscale.insertEvent(projectId, row);
   await repos.autoscale.setLastDecision(projectId, row);
   return { projectId, applied: direction };

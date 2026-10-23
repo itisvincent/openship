@@ -89,6 +89,38 @@ describe("repos.autoscale", () => {
     expect(result.targetCpuPercent).toBe(70);
   });
 
+  it("enforces the updatedAt CAS so two tabs cannot silently overwrite", async () => {
+    const saved = await autoscale.save(projectId, POLICY);
+    expect((await autoscale.get(projectId))?.updatedAt.toISOString()).toBe(
+      saved.updatedAt.toISOString(),
+    );
+    await expect(
+      autoscale.save(projectId, {
+        ...POLICY,
+        targetCpuPercent: 50,
+        expectedUpdatedAt: new Date(1999, 0, 1).toISOString(),
+      }),
+    ).rejects.toMatchObject({ code: "AUTOSCALE_POLICY_CONFLICT" });
+    expect((await autoscale.get(projectId))?.targetCpuPercent).toBe(70);
+    // Stale preconditions must not leak onto a re-arm either.
+    await autoscale.suspend(projectId, "manual override");
+    await expect(
+      autoscale.save(projectId, {
+        ...POLICY,
+        rearm: true,
+        expectedUpdatedAt: new Date(1999, 0, 1).toISOString(),
+      }),
+    ).rejects.toMatchObject({ code: "AUTOSCALE_POLICY_CONFLICT" });
+    expect((await autoscale.get(projectId))?.suspendedAt).not.toBeNull();
+    // The row's real updatedAt still passes.
+    const ok = await autoscale.save(projectId, {
+      ...POLICY,
+      rearm: true,
+      expectedUpdatedAt: (await autoscale.get(projectId))!.updatedAt.toISOString(),
+    });
+    expect(ok.suspendedAt).toBeNull();
+  });
+
   it("disable clears pending backoff and suspension intent", async () => {
     await autoscale.save(projectId, POLICY);
     await autoscale.suspend(projectId, "reason");

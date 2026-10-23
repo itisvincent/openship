@@ -353,6 +353,11 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
                 </p>
               )}
               {view.status.message && <p className="text-xs text-warning">{view.status.message}</p>}
+              {view.metrics && view.status.desired > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  CPU {Math.round((view.metrics.cpuMillicores / Math.max(1, view.metrics.pods.length)) / 10)}% avg per instance · memory {Math.round(view.metrics.memoryMiB / view.metrics.pods.length)} MiB
+                </p>
+              )}
               {view.observedAt && (
                 <p className="text-xs text-muted-foreground">
                   Checked {new Date(view.observedAt).toLocaleTimeString()}

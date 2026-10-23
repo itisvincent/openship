@@ -43,9 +43,11 @@ time, so a slow rollout cannot shorten the next window.
 
 A human outranks the autoscaler, every time:
 
-- Any manual replica change (manual scale, cluster-target change) **suspends**
-  the policy automatically. The autoscaler stops owning the count and the
-  dashboard shows why, with a re-arm button.
+- Any manual replica change (manual scale, cluster-target change) or a
+  **rollback** **suspends** the policy automatically. Rollback is itself a
+  capacity decision — the restored release may run a different count — and the
+  autoscaler must never fight an incident operator. The dashboard shows why,
+  with a re-arm button.
 - The dashboard's save + **re-arm** is the only way the loop resumes.
 - Failure backoff: repeated tick failures retry with exponential backoff and
   give up (suspend) after the configured number of consecutive failures.

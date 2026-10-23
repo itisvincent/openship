@@ -727,15 +727,37 @@ export class KubernetesRuntime implements RuntimeAdapter {
         409,
         "CLUSTER_METRICS_UNAVAILABLE",
       );
-    const parseCpu = (value?: string) => {
-      if (!value?.endsWith("m")) return null;
-      const cores = Number(value.slice(0, -1));
-      return Number.isFinite(cores) ? cores : null;
-    };
+    // K8s Quantity values: memory uses Ki/Mi/Gi (or plain bytes), CPU uses
+    // u/n/m or plain cores. Unparseable usage contributes nothing to the
+    // aggregate; if every pod ends up unparseable that reads as "no data"
+    // (all nulls) and the tick holds instead of scaling on garbage.
     const parseMemory = (value?: string) => {
-      if (!value?.endsWith("Mi")) return null;
-      const mebibytes = Number(value.slice(0, -2));
-      return Number.isFinite(mebibytes) ? mebibytes : null;
+      if (!value) return null;
+      const match = value.match(/^([0-9.]+)(Ki|Mi|Gi)?$/);
+      if (!match) return null;
+      const amount = Number(match[1]);
+      if (!Number.isFinite(amount)) return null;
+      return match[2] === "Mi"
+        ? amount
+        : match[2] === "Gi"
+          ? amount * 1024
+          : match[2] === "Ki"
+            ? amount / 1024
+            : amount / 1024 / 1024; // plain bytes
+    };
+    const parseCpu = (value?: string) => {
+      if (!value) return null;
+      const match = value.match(/^([0-9.]+)(m|u|n)?$/);
+      if (!match) return null;
+      const amount = Number(match[1]);
+      if (!Number.isFinite(amount)) return null;
+      return match[2] === "m"
+        ? amount
+        : match[2] === "u"
+          ? amount / 1000
+          : match[2] === "n"
+            ? amount / 1_000_000
+            : amount * 1000; // plain cores
     };
     const pods = result.items.map((pod) => ({
       name: pod.metadata.name,

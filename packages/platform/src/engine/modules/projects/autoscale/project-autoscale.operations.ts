@@ -74,6 +74,14 @@ export function createAutoscaleOperations(
           422,
           "CLUSTER_WORKLOAD_UNSUPPORTED",
         );
+      // Domain rules before the write, so a bad policy is a clean 422 instead
+      // of the table's raw check constraint.
+      if (input.maxReplicas < input.minReplicas)
+        throw new AppError(
+          "Max instances must be at least min instances.",
+          422,
+          "CLUSTER_CONFIG_INVALID",
+        );
       if (input.enabled) {
         const active = await findActiveDeployment(project);
         const meta = (active?.meta as DeploymentMeta | null) ?? null;
@@ -81,7 +89,17 @@ export function createAutoscaleOperations(
         if (eligibility)
           throw new AppError(eligibility, 422, "AUTOSCALE_POLICY_INELIGIBLE");
       }
-      const row = await repos.autoscale.save(id, input);
+      const row = await repos.autoscale.save(id, {
+        enabled: input.enabled,
+        targetCpuPercent: input.targetCpuPercent,
+        minReplicas: input.minReplicas,
+        maxReplicas: input.maxReplicas,
+        stepSize: input.stepSize,
+        cooldownSeconds: input.cooldownSeconds,
+        suspendAfterFailures: input.suspendAfterFailures,
+        ...(input.rearm ? { rearm: input.rearm } : {}),
+        expectedUpdatedAt: input.expectedUpdatedAt,
+      });
       record(ctx, id, { action: "autoscale.policy", ...input });
       return present(row);
     },
@@ -103,15 +121,20 @@ export function createAutoscaleOperations(
 }
 
 /** Human override handshake: called by every operation that moves the replica
- * count outside the autoscaler. Re-arm happens only through the dashboard. */
+ * count or swaps the active release outside the autoscaler. Re-arm happens only
+ * through the dashboard. Best-effort: a suspension write must never fail the
+ * triggering operation. */
 export async function suspendAutoscaleOnOverride(
   projectId: string,
   from: number | undefined,
-  to: number,
+  to: number | undefined,
 ): Promise<void> {
   try {
-    const reason =
-      `Replicas changed to ${to}${from === undefined ? "" : ` (from ${from})`} outside the autoscaler. It suspended this policy and is no longer changing the instance count.`;
+    const change =
+      from !== undefined && to !== undefined
+        ? `replicas changed to ${to} (from ${from})`
+        : "the active release changed";
+    const reason = `${change[0].toUpperCase()}${change.slice(1)} outside the autoscaler. It suspended this policy and is no longer changing the instance count.`;
     await repos.autoscale.suspend(projectId, reason);
   } catch (error) {
     observeCaughtError(error, "platform/engine/modules/projects/autoscale.operations");
