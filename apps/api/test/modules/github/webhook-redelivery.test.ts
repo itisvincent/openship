@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db, eq, repos, schema } from "@repo/db";
 import { seedOrg, seedProject, seedDeployment } from "../../helpers/seed";
 import { encrypt } from "@repo/platform/engine/lib/encryption";
+import { notification } from "@repo/platform/engine/lib/notification-dispatcher";
 import { env } from "@repo/platform/engine/config/env";
 import { registerWebhookProvider } from "@repo/platform/engine/modules/webhooks/webhook.service";
 import { githubWebhookProvider } from "../../../src/modules/github/github.webhook";
@@ -111,11 +112,7 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
     // Neither a different branch nor a disabled sibling should be dispatched.
     await seedProject(f.organizationId, { ...f.fields, gitBranch: "develop" });
     await seedProject(f.organizationId, { ...f.fields, autoDeploy: false });
-    dispatch.mockRejectedValueOnce(
-      new Error(
-        "A deployment is already in progress (dep_busy). Cancel it first or wait for it to complete.",
-      ),
-    );
+    dispatch.mockRejectedValueOnce(new Error("Clone credential unavailable"));
     const rejected = await f.send(f.deliveryId);
     expect(rejected.status).toBe(500);
     expect(await rejected.json()).toMatchObject({
@@ -128,7 +125,7 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
       processedAt: expect.any(Date),
     });
     expect((await repos.webhookDelivery.listByProject(f.project.id)).rows).toEqual([
-      expect.objectContaining({ outcome: "failed", error: expect.stringContaining("dep_busy") }),
+      expect.objectContaining({ outcome: "failed", error: "Clone credential unavailable" }),
     ]);
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ userId: f.userId, organizationId: f.organizationId }),
@@ -152,7 +149,7 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
     const f = await fixture();
     const other = await seedProject(f.organizationId, f.fields);
     dispatch.mockImplementation(async (_ctx, input) => {
-      if (input.projectId === other.id) throw new Error("A deployment is already in progress");
+      if (input.projectId === other.id) throw new Error("Clone credential unavailable");
       return { deployment: { id: "successful-sibling" } };
     });
     const response = await f.send(f.deliveryId);
@@ -257,6 +254,22 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
   );
 });
 
+
+describe("pushes queued by deployment admission", () => {
+  it("acknowledges a durable queued push without a failure notice or duplicate delivery", async () => {
+    const f = await fixture();
+    dispatch.mockResolvedValue({ deployment: undefined, skipped: true, queuedPush: true,
+      awaitingActions: { id: "queued-request", projectId: f.project.id } });
+    vi.mocked(notification.emit).mockClear();
+    const response = await f.send(f.deliveryId);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true,
+      message: expect.stringContaining("1 queued behind a running deployment") });
+    expect(notification.emit).not.toHaveBeenCalled();
+    expect((await f.send(f.deliveryId)).status).toBe(200);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+});
 
 describe("single-root workspace push decisions (#1339)", () => {
   const manifests: Record<string, unknown> = {

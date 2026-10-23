@@ -14,6 +14,7 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import http from "node:http";
 import https from "node:https";
+import { isIP } from "node:net";
 import { SsrfError, resolvePinnedHost } from "./ssrf-guard";
 
 export interface SafeFetchOptions {
@@ -123,7 +124,8 @@ async function fetchHop(
         path: `${url.pathname}${url.search}`,
         // Preserve the real hostname for virtual-host routing + cert validation.
         headers: reqHeaders,
-        ...(isHttps ? { servername: host, rejectUnauthorized: true } : {}),
+        // SNI carries DNS names. For literal IPs, TLS still verifies the IP SAN.
+        ...(isHttps ? { servername: isIP(host) ? "" : host, rejectUnauthorized: true } : {}),
       },
       (r) => {
         const status = r.statusCode ?? 0;

@@ -22,7 +22,7 @@ describe("Ruby image pinning", () => {
   it("does not apply a Ruby pin to other languages", () => {
     expect(getBuildImage("nextjs", undefined, "3.4.1")).toBe("node:22");
     expect(getBuildImage("django", undefined, "3.4.1")).toBe("python:3.12-slim");
-    expect(getRuntimeImage("nextjs", "bun", "ruby:3.4.1")).toBe("oven/bun:1.3.14");
+    expect(getRuntimeImage("nextjs", "bun", "ruby:3.4.1")).toBe("oven/bun:1.4.4");
   });
   it.each(["3.3-slim && echo wrong", "latest", "", "../../evil", "3", "3.4.1.5", "3.4.1-preview1"])(
     "rejects a nonnumeric detected pin: %s", (version) => {

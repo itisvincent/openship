@@ -3,6 +3,342 @@
 All notable changes to Openship. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 
+## 0.9.4
+
+This release adds deployment to existing Docker Swarm clusters, reviewed database
+replication, Openship Manage plans, explicit monorepo app selection and edge password
+protection. Deployment recovery, persistent storage, Cloud operations and webmail
+receive reliability and security fixes. These notes cover changes since 0.9.3.
+
+### Projects, repositories and environment
+
+- **Choose which monorepo apps to deploy** — new imports ask for an explicit app
+  selection instead of enabling every detected package or port. Add more apps,
+  browse or enter repository folders, and retain saved selections, manually added
+  roots, custom commands and private access when rescanning or reopening a project.
+- **Keep large domain lists manageable** — the wizard groups routes by their
+  owning app, shows a total and the first three rows, and offers View all. Apps
+  using the same port keep separate domain ownership; changing deployment mode
+  preserves the selected app's routes and privacy settings.
+- **Build additional services from the repository** — Services and Topology share
+  a From repository form with folder, build-context and Dockerfile selection.
+  Save the service, then deploy it through the normal pipeline. Manual paths and
+  retry remain available when browsing fails. Catalog selection gains compact
+  source tabs, search and category filtering while retaining generated credentials.
+- **Preserve Compose topology during detection** — a root Dockerfile alongside a
+  Compose file retains the declared services and volumes even when framework
+  detection also matches. Development-only Compose files beside ordinary framework
+  projects remain opt-in; explicitly selected configuration retains precedence.
+- **Skip unrelated workspace pushes** — single-app subfolder projects consider
+  transitive workspace dependencies, shared build inputs and lockfiles before
+  automatic deployment. The update banner uses the same decision. Configure
+  `autoDeployPaths.include` and `exclude` for explicit rules; uncertain analysis
+  keeps the deployment instead of silently skipping changes.
+- **Read the requested source revision consistently** — retries and explicit-commit
+  deployments read Compose files and `openship.json` defaults from that commit,
+  instead of mixing an older checkout with the branch's latest configuration.
+- **Use one effective environment view** — the Compose wizard and service editor
+  resolve defaults and interpolation consistently while preserving the original
+  templates and masked secrets. Save persists intentional service edits; existing
+  projects also offer Cancel without writing changes. Revealed values and late
+  lookup responses no longer restore an old value after saving.
+- **Clarify saving and applying environment changes** — Save and Apply & restart
+  describe their separate effects. Runtime-only values appear in a compact
+  disclosure, unchanged image defaults no longer produce recovery warnings, and
+  Apply can resolve an owned live legacy service without a populated per-service
+  deployment record. Missing containers lead to the existing deployment action.
+- **Complete GitHub connections and private clones** — hosted App setup, installation
+  selection and attempt polling use the owning Cloud connection consistently.
+  Self-hosted App creation sends a valid manifest redirect URL. Authorized
+  same-owner private submodules receive scoped, short-lived credentials without
+  persisting tokens in clone URLs or Git configuration.
+- **Show where builds actually run** — remote Docker deployments no longer offer
+  an unsupported local-image build or label a remote build as local. Genuine local
+  bare builds and independent clone-location choices remain available.
+
+### Deployments, storage and recovery
+
+- **Use release commands and roles with attached infrastructure** — supported
+  self-hosted/Desktop Docker projects can keep one primary source app on the
+  normal release-command, worker and scheduler pipeline while preparing attached
+  private image services first. Infrastructure health gates app activation;
+  retries, cancellation and rollback preserve confirmed databases and volumes.
+  General Compose, multiple source apps, Cloud and cluster targets retain their
+  existing role/release-command restrictions.
+- **Explain unsupported role configurations** — refusals describe which saved
+  release command or role must change instead of recommending the Docker runtime
+  already in use. Eligible older projects without a persisted runtime mode can
+  configure roles through the same runtime resolver as deployment.
+- **Check required Compose variables before building** — validate the effective
+  enabled service cohort before image builds, registry pulls or cutover. Errors
+  list missing keys by service without exposing values; frozen rollback settings
+  and explicit service scopes retain their existing precedence.
+- **Retry a completed Docker build** — Retry deployment can reuse a retained,
+  ownership-verified image after activation fails. It preserves the source
+  revision and destination, with no rebuild or replacement pull. Missing artifacts
+  fail clearly; unsupported bare/static and source-bind attempts do not offer an
+  image-only retry.
+- **Refresh runtime images deliberately** — the wizard exposes runtime versions,
+  build images and production images. On-demand checks compare available image
+  digests, and Refresh images & redeploy uses the normal readiness and rollback
+  pipeline. Configured version tags, digest pins and deployment scope stay intact;
+  unavailable comparisons remain unknown and pins never advance automatically.
+- **Preserve the incumbent through eligible Compose replacements** — supported
+  self-hosted Docker deployments can prepare an overlapping candidate when saved
+  limits, measured headroom, port provenance and storage compatibility permit it.
+  The old service remains until routing and the successful release are committed.
+  Other targets keep normal replacement order; concurrent writable storage needs
+  an explicit opt-in for the exact mount.
+- **Settle interrupted routing recovery before admitting a retry** — a timed-out
+  Compose recovery requests cancellation and waits for its in-flight route pass to
+  finish before releasing deployment ownership. Uncertain recovery retains the
+  containers needed for recovery instead of allowing a late route write to
+  overwrite a newer deployment.
+- **Keep image-declared data across redeploys** — self-hosted and Desktop-managed
+  Docker replacements reuse stable project-owned volumes for image `VOLUME`
+  declarations. Legacy storage is recovered from the exact verified outgoing
+  container; missing or conflicting ownership stops deployment instead of
+  attaching an unrelated orphan or starting with empty data. Explicit mounts take
+  precedence, and retained owned volumes appear in deletion previews.
+- **Require working persistence for bare deployments** — provision writable build,
+  shared-data, process metadata and log directories through the deployment login.
+  Persistence failures stop activation instead of silently leaving data inside a
+  replaceable release directory. Hosts needing one-time permission setup receive
+  actionable guidance.
+- **Start a service with empty storage without erasing its old data** — writable
+  named volumes offer Start with empty storage, with service-name confirmation and
+  a preview of the new and retained volume names. The existing service deployment
+  applies the change; failed admission can retry the same saved volume selection.
+  Other mounts, backups and the previous volume remain available for recovery.
+- **Adapt artifact retention to disk capacity** — Automatic retention can reclaim
+  eligible older Docker release artifacts under measured storage pressure while
+  protecting active releases, pins, shared references and ongoing work. Reclamation
+  requires a verified rebuild or immutable-image recovery path. Managed idle-cache
+  budgets scale with filesystem size; application containers and volumes are
+  excluded from pressure cleanup.
+- **Report useful restore failures** — when a Docker restore helper exits without
+  delivering its diagnostic output, collect a bounded tail of its logs. Stalled
+  or unavailable log reads cannot hide the original failure or indefinitely delay
+  cancellation and helper cleanup. Restore ordering and the separate attach-input
+  issue are unchanged.
+- **Apply Compose control-plane updates reliably** — explicit updates recreate API,
+  dashboard and edge services even when an earlier image prefetch already changed
+  the environment. Updates wait for application readiness and report failures;
+  PostgreSQL and Redis are not targets of forced recreation.
+- **Expose per-service swap control** — opt into `resources.swapDisabled` for
+  supported Docker services with a positive memory limit and verified swap
+  accounting. Shared validation preserves the required cap across configuration
+  edits. This changes the selected service, without changing host-wide swap or
+  imposing new build limits.
+- **Keep deployment timings accurate** — build measurements survive terminal
+  outcome writes, service timings include image preparation, and measurements
+  freeze before cleanup. Unknown durations remain unknown, skipped builds display
+  `0s`, and untouched services do not acquire invented measurements.
+
+### Clusters, scaling and topology
+
+- **Deploy to an existing Docker Swarm** — Desktop and self-hosted controllers can
+  inspect an existing Linux manager, connect its cluster, and deploy new application
+  or Compose workloads through the shared deployment, routing, scaling and rollback
+  flow. Nodes pull immutable image digests and use release-scoped secrets. Existing
+  Swarm tasks and routing-mesh ports stay protected from standalone adoption and
+  edge takeover. Moving a previously deployed project requires an explicit migration.
+- **Review scaling and database replication** — Topology Scale reviews application
+  changes before applying them. Self-hosted Kubernetes can manage PostgreSQL
+  readers and authenticated Redis/Sentinel replication through the existing
+  operators, with verified backups and explicit writer/reader connection changes.
+  Reader removal checks dependent consumers; unsafe Redis reductions use a verified
+  smaller copy that preserves the original until the connection switch is approved.
+  Swarm application scaling remains supported; synchronized database replication
+  requires Kubernetes and is separate from copying a database.
+- **See database members in the overview** — primary and replica cards show their
+  observed roles, health, servers and replication links. Larger graphs can switch
+  to a compact view; Redis Sentinel voters remain distinct from data replicas.
+  Missing observations do not invent a primary or a running member.
+- **Make K3s setup and recovery clearer** — require cgroup v2 before installation,
+  prefer This Server for the initial gateway/control roles, and correct private
+  kubelet connectivity. Retries can migrate an unchanged Openship-owned legacy
+  configuration and finish its required restart; edited or unverified configurations
+  stop with bounded, credential-redacted diagnostics.
+
+### Domains, ingress and certificates
+
+- **Password-protect self-hosted routes and native previews** — configure a shared
+  password at the OpenResty edge. Authenticated requests verify a signed browser
+  cookie locally, without an API, database or Redis lookup per request. Public
+  routes keep their existing path. Password changes and revocation invalidate
+  sessions; protected responses disable caching.
+- **Finish service routing and HTTPS together** — project and service domain saves
+  share the existing routing preparation and certificate checks. First-route setup
+  uses an inline progress viewer, retains explicit edge/DNS-01 consent, and refreshes
+  canonical status after success or partial failure. A ready proxy no longer masks
+  a failed or disconnected HTTPS check.
+- **Publish redirect-only domains without a target port** — Compose `www`/apex
+  redirects can reach the edge even when the domain has no upstream service port.
+- **Leave route-free workloads independent of the edge** — private deployments
+  without hostname routes skip unnecessary edge takeover, challenge and vhost
+  preparation. Fixed-port services retain their explicit bindings; automatic
+  allocations still require verified inventory and durable port claims.
+- **Open pgAdmin without a custom domain** — PostgreSQL + pgAdmin supports an
+  explicit Port only option while PostgreSQL stays internal. New catalog services
+  also generate required PostgreSQL, MySQL, MariaDB, MongoDB and Typesense
+  credentials instead of leaving their bootstrap secrets empty.
+- **Reuse valid parent wildcard certificates** — immediate subdomains can inherit
+  a validated parent wildcard certificate when an exact certificate is absent.
+  Exact certificates retain precedence; read failures preserve the working route
+  rather than initiating replacement issuance or copying private keys.
+- **Replace manual certificates without breaking renewal state** — remove only
+  the selected hostname's obsolete Certbot renewal record after validation.
+  Failed installation restores the prior certificate, key or archive links and
+  renewal configuration before any reload; unrelated lineages remain intact.
+- **Improve routing recovery and diagnostics** — control-plane setup can reclaim
+  its own quarantined dashboard port without taking another workload's claim.
+  ACME 502/504 errors describe challenge forwarding and the temporary listener;
+  safe Cloud routing errors retain their actionable cause instead of blaming a
+  healthy server connection.
+- **Keep tunnel management in the route menu** — Cloudflare Tunnel settings move
+  into the existing context menu, retaining per-domain Access settings, retry and
+  readiness behavior without a persistent management row on every card.
+
+### Cloud, billing, monitoring and Actions
+
+- **Manage customer-owned infrastructure from Cloud** — Openship Manage starts at
+  $5/month per organization for two connected servers, plus $3/month per extra
+  server. New Cloud purchases start at $20/month, with Starter, Pro and Scale plans;
+  existing subscriptions retain their saved terms and self-hosted control planes
+  remain free. Expiration ends management access after the paid period while
+  applications and data remain on the customer's hosts.
+- **Keep management billing and access coordinated** — durable checkout intent
+  and receipt validation protect purchase retries. Paid Cloud organizations receive
+  their included management allowance once, and allowance changes coordinate with
+  server connections. Increasing recurring charges after Cloud coverage ends
+  requires explicit consent.
+- **Recover pending checkout conflicts** — explain when a purchase must be completed
+  or cancelled, and open the existing payment recovery dialog. Checkout limits,
+  pending resource changes, verification failures and cancellation in progress
+  receive specific guidance instead of a generic retry message.
+- **Reconnect Cloud usage streams** — interrupted read-only subscriptions recover
+  from retryable disconnects with bounded backoff. Authentication failures,
+  malformed data and stalled subscriptions still fail clearly; cancellation
+  releases readers, requests and timers.
+- **Recover orphaned Cloud terminals precisely** — refresh expiring namespace
+  credentials for dispatch and teardown, then recover only the marked commands
+  belonging to the interrupted operation. Ownership is cleared only after confirmed
+  process exit; live controllers and another installation's claims remain protected.
+- **Reuse scoped provider credentials and retain throttling guidance** — concurrent
+  Cloud lookups share short-lived namespace tokens after ownership checks. Rejected
+  token generations are invalidated without evicting newer credentials or replaying
+  mutations. HTTP 429/503 and bounded Retry-After guidance survive the transport.
+- **Explain resource-related deployment failures** — supported OOM, heap-limit and
+  storage evidence produces a saved diagnosis and Review capacity action for the
+  affected Cloud space. The explanation survives reloads and compacted logs. Long
+  builds receive optional advice rather than an invented capacity failure;
+  upgrades and retries remain explicit.
+- **Reflect runtime incidents in project status** — known incidents on the active
+  self-hosted workload show Action Required and link to Monitoring & Logs. Status
+  clears after observed recovery; intentional stops, retired workloads and
+  monitoring opt-outs do not create stale attention.
+- **Calculate response averages from requests** — Overview and CLI traffic metrics
+  divide total request duration by total request count, with consistent millisecond
+  conversion for Cloud and self-hosted data. Uneven traffic and live/archive
+  refreshes no longer inflate the reported average. Edge collection is unchanged.
+- **Preserve active Actions runners through temporary API failures** — retry
+  transient provider, GitHub and App-token renewal failures without cancelling
+  the worker, releasing its capacity or silently falling back to broader user
+  credentials. Persist supervisor completion before external cleanup and retain
+  verified infrastructure errors when GitHub synchronization finishes.
+- **Merge Actions history reliably** — local timestamps and Cloud date strings sort
+  together without crashing the Actions page. Failed Cloud augmentation preserves
+  the local run list. Service connection/unlink messages also reflect the existing
+  automatic deployment attempt instead of asking users to trigger it twice.
+- **Keep an active personal workspace during account changes** — deleting or leaving
+  the selected team workspace restores the stored session owner's personal
+  workspace instead of failing while clearing the active organization.
+
+### Security and credentials
+
+- **Pin patched runtimes and build tools** — use Node 22.23.4 and Bun 1.4.4 across
+  the affected control-plane, website, webmail and worker image stages, with verified
+  image digests. Desktop moves to supported Electron 44.9.2; Actions distributions
+  use Go 1.26.9 and updated Git, archive, SSH/HTTP and telemetry dependencies.
+- **Keep runtime regressions in release checks** — exercise the upstream Brotli
+  decoder rejection case, streaming input, private-CA HTTPS, hostname verification
+  and authenticated asynchronous WebSockets. TLS SNI is sent only for DNS names,
+  and package-manager bootstrapping works when `node` is an alias to Bun.
+- **Preserve authority across tenant and terminal boundaries** — service, server
+  and proxied Cloud terminals retain the caller's credential restrictions and
+  recheck expiry, revocation and current administrative access. SaaS-managed
+  customer hosts use verified public destinations, SSH host-key pins and encrypted
+  uploaded credentials; operator identities and private certificate-provider
+  settings remain outside tenant-controlled host configuration.
+- **Scope backup connections at use time** — Cloud S3/SFTP destinations pass the
+  shared public-network checks before connecting to the validated address. Server
+  SSH identity and existing host-key pins remain enforced for SFTP; self-hosted
+  private backup storage stays supported.
+- **Grant narrower token capabilities** — personal access tokens and MCP clients
+  can receive project-scoped domain read/write/delete and deployment read/trigger
+  permissions. Minting checks the creator's authority, and cancellation, rollback
+  and deployment deletion retain their administrative requirement.
+- **Protect remote Docker builds from metadata destinations** — rootful Linux SSH
+  and Cloud builds use the project-owned BuildKit worker's IPv4/IPv6 metadata and
+  credential-endpoint policy, including after restart. Missing required executor
+  or policy support fails before repository commands; local Engine API, bare and
+  Kubernetes builds remain outside this policy's scope.
+- **Verify worker publication before releasing dependent packages** — publish and
+  anonymously verify the protected worker for both supported Linux architectures
+  before dependent image and bundled-release publication. Release receipts must
+  match the tag and source commit; missing or private images stop publication.
+- **Keep disabled preview services isolated** — disabled service copies retain
+  their disabled state while host bind mounts and external host/container namespace
+  references are removed. Named/anonymous volumes and sibling service references
+  stay usable; production configuration is unchanged.
+- **Separate webhook endpoint quotas behind shared addresses** — unrelated hooks
+  no longer exhaust one another's source-IP bucket. Endpoint quotas share the
+  existing limiter with a separate aggregate IP ceiling; authentication, signatures
+  and credential redaction remain enforced.
+
+### Desktop, webmail, website and documentation
+
+- **Restore visible offline Desktop startup** — embed the shared generated theme
+  palette in the native loading page so its text and artwork remain visible before
+  the dashboard loads.
+- **Repair older managed webmail host mappings** — backfill the missing host-gateway
+  alias for the explicitly linked webmail service on its own self-hosted mail
+  server. The repair preserves credentials and volumes and takes effect through
+  the next normal deployment.
+- **Preview Office attachments with bounded rendering** — XLSX, DOCX and CSV files
+  gain readable, sandboxed previews with limits on parsing and rendered content.
+  Unsupported, encrypted, corrupt or truncated content retains a download option.
+  Active HTML/SVG/XML and unknown attachment types download instead of executing
+  in the signed-in webmail origin.
+- **Update mail and editor dependencies consistently** — align the patched editor
+  dependency graph across direct and nested imports, update Nodemailer and
+  Mailparser, and preserve reviewed runtime overrides in Docker and tarball
+  packages. Existing SMTP modes and credential repair remain supported.
+- **Keep public-page social previews intact** — pricing, marketing, catalog,
+  feature, blog, changelog and mail-guide pages inherit the shared Open Graph and
+  Twitter images while retaining explicit page images and metadata. The release
+  checks validate the rendered image tags and their image responses.
+- **Show GitHub stars in site navigation** — desktop and mobile navigation display
+  the cached repository star count, with an accessible exact count and a fallback
+  when GitHub is unavailable.
+- **Improve operational guidance** — document Docker socket permissions and
+  reconnecting after group changes, update the shared API/SDK/CLI/MCP references,
+  and explain the supported cluster, recovery and runtime-image workflows.
+
+### Upgrade notes
+
+- Rebuild or recreate the affected control-plane and webmail deployments to apply
+  their runtime updates. Explicit project runtime versions and image digest pins
+  are preserved; updating Openship alone does not update every deployed app.
+- Protected rootful SSH Docker builds require Buildx and root or passwordless sudo
+  for the trusted worker policy and cache filesystem operations. Ordinary explicit
+  CPU/RAM limits and unconfigured resource sharing retain their existing behavior.
+- Existing-Swarm support is for Desktop/self-hosted controllers, with stop-first
+  cutover and single-instance persistent services on the connected manager. It does
+  not adopt arbitrary existing stacks or add hosted Cloud clustering. Managed
+  PostgreSQL/Redis replication requires self-hosted Kubernetes operators.
+
 ## 0.9.3
 
 This release improves Cloud monitoring and build-cache reliability, adds deployment

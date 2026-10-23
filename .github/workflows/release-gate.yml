@@ -142,7 +142,9 @@ jobs:
       # coverage for "the update crash-looped on migrations".
       - name: Run tests
         if: steps.resume.outputs.reused != 'true'
-        run: bun run test
+        run: |
+          bun run test
+          bun run test:scripts
 
       - name: Verify Cloud build coordination on PostgreSQL
         if: steps.resume.outputs.reused != 'true'
@@ -229,7 +231,7 @@ jobs:
         if: steps.resume.outputs.reused != 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Cache bun install
         if: steps.resume.outputs.reused != 'true'

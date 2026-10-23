@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,6 +14,7 @@ function run(
     failCorepack?: boolean;
     manager?: string;
     reportedVersion?: string;
+    nodeAliasToBun?: boolean;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "openship-pnpm-bootstrap-"));
@@ -37,6 +38,11 @@ exit 0
 `,
       { mode: 0o755 },
     );
+  if (options.nodeAliasToBun) {
+    const binary = spawnSync("bun", ["--print", "process.execPath"], { encoding: "utf8" });
+    expect(binary.status, binary.stderr).toBe(0);
+    symlinkSync(binary.stdout.trim(), join(root, "bin", "node"));
+  }
   const cwd = options.nested ? join(root, "nested") : root;
   if (options.nested) {
     mkdirSync(cwd);
@@ -132,6 +138,14 @@ describe("managed pnpm bootstrap", () => {
 });
 
 describe("shared package-manager contract", () => {
+  it("bootstraps Bun when node is an alias to the actual Bun runtime", () => {
+    const result = run(
+      { "package.json": '{"packageManager":"bun@1.4.4"}' },
+      { manager: "bun", nodeAliasToBun: true, reportedVersion: "1.4.4" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Verified package manager: bun@1.4.4");
+  });
   it("retains npm integrity pins through Corepack", () => {
     const pin = `npm@9.9.4+sha512.${"a".repeat(128)}`;
     const result = run(

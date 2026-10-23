@@ -1,16 +1,18 @@
 # syntax=docker/dockerfile:1
+ARG NODE_IMAGE=node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS node-build
 FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm AS actions-runner
 WORKDIR /runner
 COPY packages/actions-runner/go.mod packages/actions-runner/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY packages/actions-runner/ ./
+COPY --from=node-build /usr/local/bin/node /usr/local/bin/node
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    apt-get update && apt-get install -y --no-install-recommends nodejs \
- && node build.mjs
+    node build.mjs
 
 # ─── Build stage ────────────────────────────────────────
 # Keep the dependency installer on .bun-version.
-FROM oven/bun:1.3.14 AS builder
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS builder
 WORKDIR /app
 
 COPY package.json bun.lock pnpm-workspace.yaml ./
@@ -31,7 +33,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
  && cd apps/api && bun run build
 
 # ─── Production stage ──────────────────────────────────
-FROM node:22.23.4-bookworm-slim AS runner
+FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
 
 # Remote-server management from the containerized control plane:

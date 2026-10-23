@@ -41,7 +41,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         if: steps.resume.outputs.reused != 'true'
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
       - uses: actions/cache@v6
         if: steps.resume.outputs.reused != 'true'
         with:

@@ -16,7 +16,14 @@
  * cannot serve both, and the old one installed nothing on whichever it guessed against.
  */
 
-import { answered, refused, shellQuote, IPTABLES_PROBES, type Answer } from "@repo/core";
+import {
+  answered,
+  refused,
+  shellQuote,
+  IPTABLES_PROBES,
+  PACKAGE_MANAGER_DEFAULTS,
+  type Answer,
+} from "@repo/core";
 
 import type { EnvironmentProfile } from "../system/environment";
 import { envOps, hostRefusal, opScript, type EnvOps, type Op } from "../system/environment-ops";
@@ -298,7 +305,7 @@ const NODE_LTS_MAJOR = 22;
 
 /** Pinned so a toolchain install is reproducible across hosts. */
 const GO_VERSION = "1.22.5";
-const BUN_VERSION = "1.2.0";
+const BUN_VERSION = PACKAGE_MANAGER_DEFAULTS.bun;
 const DOTNET_CHANNEL = "8.0";
 
 /**

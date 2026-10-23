@@ -3,7 +3,7 @@ export const PACKAGE_MANAGER_DEFAULTS = {
   npm: "9.9.4",
   pnpm: "9.15.9",
   yarn: "1.22.22",
-  bun: "1.3.14",
+  bun: "1.4.4",
 } as const;
 export type ManagedPackageManager = keyof typeof PACKAGE_MANAGER_DEFAULTS;
 

@@ -27,7 +27,7 @@ describe("Node runtime image pinning", () => {
       "ruby:3.4",
     ])
       expect(getRuntimeImage("node", "npm", image)).toBe("node:22");
-    expect(getRuntimeImage("node", "bun", "node:24")).toBe("oven/bun:1.3.14");
+    expect(getRuntimeImage("node", "bun", "node:24")).toBe("oven/bun:1.4.4");
     expect(getRuntimeImage("static", "npm", "node:24")).toBe(getRuntimeImage("static", "npm"));
     expect(getRuntimeImage("django", "pip", "node:24")).toBe("python:3.12-slim");
   });

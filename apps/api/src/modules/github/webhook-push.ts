@@ -20,28 +20,11 @@ import {
 import { resolveProjectChangeImpact } from "@repo/platform/engine/modules/github/project-change-impact";
 import { webhookActorCtx } from "./webhook-shared";
 import { resolveOrgOwner } from "@repo/platform/engine/lib/org-actor";
-import { notification } from "@repo/platform/engine/lib/notification-dispatcher";
+import { notifyAutoDeployFailed } from "@repo/platform/engine/modules/github/queued-pushes";
 import type { WebhookHandlerResult } from "@repo/platform/engine/modules/webhooks/webhook.types";
 import type { GitHubPushPayload } from "@repo/contracts";
 
 // ─── Branch deployment events ────────────────────────────────────────────────
-
-/** Surface a webhook auto-deploy that failed before a deployment row existed
- *  (so the pipeline's own deployment.failed never fired). Org-scoped +
- *  fire-and-forget — reaches members/channels even when there's no owner. */
-function notifyAutoDeployFailed(project: Project, err: unknown): void {
-  notification.emit({
-    organizationId: project.organizationId,
-    eventType: "deployment.failed",
-    resourceType: "project",
-    resourceId: project.id,
-    payload: {
-      projectName: project.name,
-      trigger: "webhook",
-      reason: safeErrorMessage(err),
-    },
-  });
-}
 
 /** Best-effort webhook_delivery feed row for a GitHub push outcome. Never throws
  *  (observability must not break the deploy). `p` null = a forwarded/unmanaged row. */
@@ -272,6 +255,8 @@ async function deployProjectFromPush(
       changedPaths: changedPathsTruncated ? null : changedPaths,
     },
   );
+  if ("queuedPush" in triggered) return { queued: true as const };
+
 
   // Persist changed-files onto the deployment row for the dashboard. Best-effort.
   // Skip when deduped — `triggered.deployment` is the already-live one, not ours.
@@ -382,14 +367,19 @@ async function triggerBranchDeployments(
 
   let succeeded = 0;
   let skipped = 0;
+  let queued = 0;
   let failed = 0;
   await Promise.all(
     results.map(async (r, i) => {
       const p = pendingProjects[i];
       if (r.status === "fulfilled") {
         handledProjectIds.add(p.id);
-        const v = r.value as { deployment?: { id?: string }; skipped?: boolean; reason?: string } | undefined;
-        if (v?.skipped) {
+        const v = r.value as
+          | { deployment?: { id?: string }; skipped?: boolean; queued?: boolean; reason?: string }
+          | undefined;
+        if (v?.queued) {
+          queued++;
+        } else if (v?.skipped) {
           skipped++;
           await recordPushDelivery(p, input, "skipped", { reason: v.reason });
         } else {
@@ -425,6 +415,7 @@ async function triggerBranchDeployments(
       `Triggered ${succeeded} deployment(s) for ${input.owner}/${input.repo}#${input.branch}` +
       `${alreadyHandled ? `, ${alreadyHandled} already handled by this delivery` : ""}` +
       `${skipped ? `, ${skipped} skipped (no relevant changes)` : ""}` +
+      `${queued ? `, ${queued} queued behind a running deployment` : ""}` +
       `${failed ? `, ${failed} failed` : ""}`,
   };
 }

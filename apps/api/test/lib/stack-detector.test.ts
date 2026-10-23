@@ -1027,7 +1027,7 @@ describe("detectStack - output directory and build image", () => {
       dependencies: { next: "^15.0.0" },
     });
     expect(result.packageManager).toBe("bun");
-    expect(result.buildImage).toBe("oven/bun:1.3.14");
+    expect(result.buildImage).toBe("oven/bun:1.4.4");
   });
 
   it("bun does NOT override build image for non-JS stacks", () => {

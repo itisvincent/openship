@@ -124,11 +124,13 @@ it("pins the API installer and its patched Node runtime", async () => {
   const repoDir = fileURLToPath(new URL("../../../../", import.meta.url));
   const version = (await readFile(join(repoDir, ".bun-version"), "utf8")).trim();
   const dockerfile = await readFile(join(apiDir, "Dockerfile"), "utf8");
-  const stages = [...dockerfile.matchAll(/^FROM (oven\/bun|node):(\S+) AS (builder|runner)$/gm)];
-  expect(stages.map((match) => [match[3], match[1], match[2]])).toEqual([
-    ["builder", "oven/bun", version],
-    ["runner", "node", "22.23.4-bookworm-slim"],
-  ]);
+  expect(dockerfile).toContain(`FROM oven/bun:${version}@sha256:`);
+  const nodeImage = dockerfile.match(
+    /^ARG NODE_IMAGE=(node:22\.23\.4-bookworm-slim@sha256:[a-f0-9]{64})$/m,
+  )?.[1];
+  expect(nodeImage).toBeDefined();
+  expect(dockerfile).toContain("FROM ${NODE_IMAGE} AS runner");
+  expect(dockerfile).toContain("FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS node-build");
   const manifest = JSON.parse(await readFile(join(repoDir, "package.json"), "utf8"));
   expect(manifest.packageManager).toBe(`bun@${version}`);
 });
