@@ -18,6 +18,9 @@ import { withDeploymentRuntime, type DeploymentMeta } from "../../../lib/deploym
 import { withLiveProjectRuntimeMutation } from "../../../lib/project-runtime-lock";
 
 type Policy = NonNullable<Awaited<ReturnType<typeof repos.autoscale.get>>>;
+// A same-count conditional patch retires an obsolete request without scaling.
+// Its receipt is deterministic so a lost response can be reconciled too.
+const cancelledScaleId = (operationId: string) => `${operationId}:cancelled`;
 const HYSTERESIS_PERCENT = 10;
 const SCALE_DOWN_MIN_COOLDOWN_SECONDS = 300;
 // metrics-server normally refreshes every 15 seconds. Older samples cannot
@@ -231,21 +234,24 @@ async function scaleOnePolicy(project: Project, policy: Policy): Promise<Autosca
         await repos.autoscale.completeScale(projectId, pending.operationId);
         return { projectId, applied: pending.event.action };
       }
+      if (
+        status.scaling.operationId === cancelledScaleId(pending.operationId) &&
+        status.desired === pending.replicas &&
+        status.generation === pending.generation + 1
+      ) {
+        await repos.autoscale.discardScale(projectId);
+        return hold(projectId, "the obsolete scale request was cancelled");
+      }
       if (status.generation !== pending.generation || status.desired !== pending.replicas)
         return suspend(
           projectId,
           "Instances changed outside the pending scale operation. Review them before resuming autoscaling.",
           status.desired,
         );
-      // There is no receipt: this may be an ambiguous request still in flight.
-      // The original UID/generation fence makes retrying the same intent safe.
+      // No receipt means acceptance is still uncertain. Reuse the SAME fresh
+      // admission below as a new decision; old metrics/policy never authorize a retry.
       if (!policy.enabled || policy.suspendedAt)
         return hold(projectId, "policy is disabled or suspended");
-      if ((await repos.instanceSettings.get())?.autoscalerDisabled)
-        return hold(projectId, "autoscaling is disabled for this instance");
-      await runtime.scaleInPlace(active.containerId!, pending.toReplicas, pending);
-      await repos.autoscale.completeScale(projectId, pending.operationId);
-      return { projectId, applied: pending.event.action };
     }
     if (!ready(status)) return hold(projectId, "the current rollout is still in progress");
     if (
@@ -289,6 +295,22 @@ async function scaleOnePolicy(project: Project, policy: Policy): Promise<Autosca
     }
     const utilization = (total / status.desired / limit) * 100;
     const decision = decideReplicas(status.desired, utilization, policy);
+    if (pending && decision?.desired !== pending.toReplicas) {
+      if ((await repos.instanceSettings.get())?.autoscalerDisabled)
+        return hold(projectId, "autoscaling is disabled for this instance");
+      await checkNoActiveBuild(projectId);
+      // Do not just forget the intent: its delayed PATCH might still arrive.
+      // Keep the observed count and advance the operation/generation atomically.
+      // Either this patch wins (fencing the old one), or the old one wins and
+      // its receipt is reconciled on the next tick. The pending intent survives
+      // any ambiguous failure until one of those outcomes can be observed.
+      await runtime.scaleInPlace(active.containerId!, pending.replicas, {
+        ...pending,
+        operationId: cancelledScaleId(pending.operationId),
+      });
+      await repos.autoscale.discardScale(projectId);
+      return hold(projectId, "the obsolete scale request was cancelled");
+    }
     if (!decision) return hold(projectId, "no change needed");
     const cooldownSeconds =
       decision.direction === "scale_down"
@@ -302,7 +324,7 @@ async function scaleOnePolicy(project: Project, policy: Policy): Promise<Autosca
     if ((await repos.instanceSettings.get())?.autoscalerDisabled)
       return hold(projectId, "autoscaling is disabled for this instance");
     await checkNoActiveBuild(projectId);
-    const intent = {
+    const intent = pending ?? {
       operationId: generateId("asc"),
       uid: status.scaling.uid,
       generation: status.generation,
@@ -321,7 +343,7 @@ async function scaleOnePolicy(project: Project, policy: Policy): Promise<Autosca
         reason: `${Math.round(utilization)}% of the CPU limit vs a ${policy.targetCpuPercent}% target`,
       },
     };
-    await repos.autoscale.beginScale(projectId, policy.updatedAt, intent);
+    if (!pending) await repos.autoscale.beginScale(projectId, policy.updatedAt, intent);
     await runtime.scaleInPlace(active.containerId!, decision.desired, intent);
     await repos.autoscale.completeScale(projectId, intent.operationId);
     return { projectId, applied: decision.direction };

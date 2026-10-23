@@ -695,7 +695,9 @@ export class KubernetesRuntime implements RuntimeAdapter {
    * intent annotation together, so a stop/start cycle restores what the
    * autoscaler (or operator) last intended, never a stale pre-scale count.
    * Only volumes/database preconditions are revalidated; a count change must
-   * never rebuild the release. Returns after the conditional patch is accepted; status reports readiness. */
+   * never rebuild the release. A same-count patch still changes the operation
+   * annotation, which advances a Deployment's generation and fences old requests.
+   * Returns after the conditional patch is accepted; status reports readiness. */
   async scaleInPlace(ref: string, replicas: number, precondition?: ClusterScalePrecondition) {
     if (!Number.isSafeInteger(replicas) || replicas < 1 || replicas > 100)
       throw new AppError(

@@ -31,6 +31,16 @@ release or project revision suspends further changes rather than overwriting an
 operator. Pending accepted changes can be recorded after policy disable, but a
 disabled/suspended policy cannot issue new scale requests.
 
+If no acceptance receipt exists, retries use the same readiness, fresh metrics,
+current policy bounds/step and cooldown checks as new decisions. An obsolete
+decision is retired with a conditional same-count patch carrying a cancellation
+receipt. This changes the Deployment's operation annotation/generation without
+changing its pod template or replica count, so a delayed old request cannot land
+after retirement. The pending intent is cleared only after retirement succeeds
+or its receipt is observed. If the original request wins that race, its accepted
+receipt is recorded instead. A lost cancellation response or database failure
+is recovered without replaying either request.
+
 Kubernetes acceptance does not mean pods are ready. The controller does not hold
 the project lock while waiting for rollout; it admits another decision only once
 all desired instances are ready, updated and available. Manual scaling continues

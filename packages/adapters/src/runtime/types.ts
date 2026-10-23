@@ -227,6 +227,8 @@ export interface RuntimeAdapter {
    * plus workload spec together). Re-read resource-version conflicts while
    * preserving the caller's workload precondition. Callers gate on
    * `supports("scaleInPlace")`. Returns on acceptance; status reports readiness.
+   * A same-count write with a new operation ID must also advance the generation:
+   * the autoscaler uses its receipt to retire a stale, possibly in-flight request.
    */
   scaleInPlace?(containerId: string, replicas: number, precondition?: ClusterScalePrecondition): Promise<void>;
   /**

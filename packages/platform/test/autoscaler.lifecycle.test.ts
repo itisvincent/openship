@@ -367,6 +367,133 @@ describe("autoscaler lifecycle with real repositories and project locks", () => 
     expect((await getProject())!.clusterConfig?.replicas).toBe(3);
   });
 
+  it("retires an unapplied scale-up when the saved maximum is lowered", async () => {
+    h.scale.mockRejectedValueOnce(new Error("offline before patch"));
+    await runAutoscaleTick();
+    expect((await getPolicy())!.pendingScale!.toReplicas).toBe(3);
+    await operations.setAutoscalePolicy(ctx, "project", {
+      ...policyInput,
+      maxReplicas: 2,
+      expectedUpdatedAt: (await getPolicy())!.updatedAt.toISOString(),
+    });
+    await clearBackoff();
+    await runAutoscaleTick();
+    expect(status.desired).toBe(2);
+    expect((await getProject())!.clusterConfig?.replicas).toBe(2);
+    expect((await getPolicy())!.pendingScale).toBeNull();
+    expect(await h.repos.autoscale.lastScaleEvent("project")).toBeNull();
+  });
+
+  it("retires a stale downscale, fences its delayed request, and can scale up next", async () => {
+    const apply = h.scale.getMockImplementation()!;
+    metrics.pods.forEach((pod) => (pod.cpuMillicores = 100));
+    h.scale.mockRejectedValueOnce(new Error("offline before patch"));
+    await runAutoscaleTick();
+    const stale = (await getPolicy())!.pendingScale!;
+    expect(stale.toReplicas).toBe(1);
+    metrics.pods.forEach((pod) => (pod.cpuMillicores = 950));
+    await clearBackoff();
+    await runAutoscaleTick();
+    expect(status.desired).toBe(2);
+    expect((await getPolicy())!.pendingScale).toBeNull();
+    // A request that was delayed before the retirement can no longer land.
+    await expect(apply("k8s:release", stale.toReplicas, stale)).rejects.toMatchObject({
+      code: "CLUSTER_WORKLOAD_CONFLICT",
+    });
+    status.observedGeneration = status.generation;
+    await runAutoscaleTick();
+    expect(status.desired).toBe(3);
+    expect((await getProject())!.clusterConfig?.replicas).toBe(3);
+    expect((await h.repos.autoscale.lastScaleEvent("project"))!.action).toBe("scale_up");
+  });
+
+  it.each(["partial metrics", "stale metrics", "unready rollout", "longer cooldown"])(
+    "does not replay a pending request with %s",
+    async (changed) => {
+      h.scale.mockRejectedValueOnce(new Error("offline before patch"));
+      await runAutoscaleTick();
+      if (changed === "partial metrics") metrics.pods.pop();
+      if (changed === "stale metrics")
+        metrics.pods[0].timestamp = new Date(Date.now() - 120_000).toISOString();
+      if (changed === "unready rollout") status.ready = 1;
+      if (changed === "longer cooldown") {
+        await h.repos.autoscale.insertEvent("project", {
+          createdAt: new Date(Date.now() - 180_000).toISOString(),
+          action: "scale_up",
+          fromReplicas: 1,
+          toReplicas: 2,
+          observedCpuPercent: 95,
+          reason: "previous scale",
+        });
+        await operations.setAutoscalePolicy(ctx, "project", {
+          ...policyInput,
+          cooldownSeconds: 600,
+          expectedUpdatedAt: (await getPolicy())!.updatedAt.toISOString(),
+        });
+      }
+      await clearBackoff();
+      await runAutoscaleTick();
+      expect(h.scale).toHaveBeenCalledTimes(1);
+      expect(status.desired).toBe(2);
+      // Keep the receipt identity; an already-in-flight request may still arrive.
+      expect((await getPolicy())!.pendingScale).not.toBeNull();
+    },
+  );
+
+  it.each(["lost response", "failed DB clear"])(
+    "recovers an accepted retirement after %s without repeating the patch",
+    async (failure) => {
+      const apply = h.scale.getMockImplementation()!;
+      h.scale.mockRejectedValueOnce(new Error("offline before patch"));
+      await runAutoscaleTick();
+      metrics.pods.forEach((pod) => (pod.cpuMillicores = 700));
+      if (failure === "lost response")
+        h.scale.mockImplementationOnce(async (...args) => {
+          await apply(...args);
+          throw new Error("lost retirement response");
+        });
+      else
+        vi.spyOn(h.repos.autoscale, "discardScale").mockRejectedValueOnce(new Error("DB offline"));
+      await clearBackoff();
+      await runAutoscaleTick();
+      expect((await getPolicy())!.pendingScale).not.toBeNull();
+      expect(status.desired).toBe(2);
+      await disable();
+      await runAutoscaleTick();
+      expect(h.scale).toHaveBeenCalledTimes(2);
+      expect((await getPolicy())!.pendingScale).toBeNull();
+      expect((await getProject())!.clusterConfig?.replicas).toBe(2);
+      expect(await h.repos.autoscale.lastScaleEvent("project")).toBeNull();
+    },
+  );
+
+  it("reconciles the original operation if it wins the race against retirement", async () => {
+    const apply = h.scale.getMockImplementation()!;
+    h.scale.mockRejectedValueOnce(new Error("ambiguous request"));
+    await runAutoscaleTick();
+    const original = (await getPolicy())!.pendingScale!;
+    metrics.pods.forEach((pod) => (pod.cpuMillicores = 700));
+    h.scale.mockImplementationOnce(async (...args) => {
+      // The original request arrives after observation but before cancellation.
+      await apply("k8s:release", original.toReplicas, original);
+      return apply(...args);
+    });
+    await clearBackoff();
+    await runAutoscaleTick();
+    expect(status.desired).toBe(3);
+    expect((await getPolicy())!.pendingScale).not.toBeNull();
+    await disable();
+    // A receipt does not need fresh metrics or a still-enabled policy to commit.
+    h.metrics.mockRejectedValue(new Error("metrics unavailable"));
+    await runAutoscaleTick();
+    expect((await getProject())!.clusterConfig?.replicas).toBe(3);
+    expect((await getPolicy())!.pendingScale).toBeNull();
+    expect(h.scale).toHaveBeenCalledTimes(2);
+    expect(
+      (await h.repos.autoscale.listEvents("project")).filter((e) => e.action === "scale_up"),
+    ).toHaveLength(1);
+  });
+
   it("rolls back all DB writes on commit failure, then reconciles the exact receipt", async () => {
     await connection.db.execute(
       sql`CREATE FUNCTION fail_autoscale_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected commit failure'; END $$`,
