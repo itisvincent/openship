@@ -14,6 +14,7 @@ import {
   type ProjectResources,
 } from "@repo/core";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/Switch";
 import { getApiErrorMessage, projectsApi } from "@/lib/api";
 import type { Service } from "@/lib/api/services";
 import type { TopologyProject } from "./model";
@@ -83,7 +84,7 @@ export function TopologyScaling({
     !service &&
     resolveWorkload(project.options?.workloadType, project.options?.hasServer) === "static";
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {!service && !staticApplication && project.appTemplateId !== "openship" && (
         <TopologyClusterScaling
           project={project}
@@ -93,175 +94,214 @@ export function TopologyScaling({
           onClusterState={onClusterState}
         />
       )}
-      <section className="space-y-3">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <UiIcon name="cpu" className="size-4 text-muted-foreground" />
-          {project.deployTarget === "cluster" ? "Resources per instance" : "CPU & memory"}
-        </div>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {project.deployTarget === "cluster"
-            ? "CPU and memory limits for each application instance. Review and apply to update all instances."
-            : service
-              ? "Limits for this service. Review and apply to update its resources."
-              : "Default runtime limits for this environment. Services with their own limits keep those overrides."}
-        </p>
-        {staticApplication ? (
-          <p className="rounded-xl bg-muted/40 p-3 text-xs text-muted-foreground">
-            This application serves static files and has no application container to resize.
-          </p>
-        ) : (
-          <>
-            {!view && !error && (
-              <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-                <UiIcon name="spinner" className="size-3.5 animate-spin" />
-                Loading resource settings…
-              </div>
-            )}
-            {view && (
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const values = {
-                    cpuCores: Number(cpu),
-                    memoryMb: Number(memory),
-                    ...(swapDisabled && { swapDisabled: true }),
-                  };
-                  const invalid =
-                    !cpu.trim() ||
-                    !memory.trim() ||
-                    !Number.isFinite(values.cpuCores) ||
-                    !Number.isFinite(values.memoryMb) ||
-                    values.cpuCores < 0 ||
-                    values.memoryMb < 0 ||
-                    !Number.isInteger(values.memoryMb);
-                  const problem = invalid
-                    ? "Enter a valid CPU limit and whole-number memory limit."
-                    : swapDisabled && !(values.memoryMb > 0)
-                      ? "Disabling swap requires a positive memory limit."
-                      : view.requiresLimit && (!values.cpuCores || !values.memoryMb)
-                        ? "This target requires explicit CPU and memory limits."
-                        : validateAgainstCapacity(
-                            { ...values, diskMb: view.production.diskMb },
-                            view.capacity ?? UNKNOWN_CAPACITY,
-                          );
-                  if (problem) {
-                    setError(problem);
-                    return;
-                  }
-                  setError(null);
-                  onStage(values, view, baseline.current);
-                  setStaged(true);
-                }}
-                className="space-y-3"
-              >
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="space-y-1.5 text-xs text-muted-foreground">
-                    CPU cores
-                    <input
-                      className="topology-input"
-                      type="number"
-                      min={view.requiresLimit ? MIN_CPU_CORES : 0}
-                      step="any"
-                      value={cpu}
-                      onChange={(event) => {
-                        setCpu(event.target.value);
-                        setStaged(false);
-                      }}
-                      required
-                    />
-                  </label>
-                  <label className="space-y-1.5 text-xs text-muted-foreground">
-                    Memory (MB)
-                    <input
-                      className="topology-input"
-                      type="number"
-                      min={view.requiresLimit ? MIN_MEMORY_MB : 0}
-                      step="1"
-                      value={memory}
-                      onChange={(event) => {
-                        setMemory(event.target.value);
-                        setStaged(false);
-                      }}
-                      required
-                    />
-                  </label>
-                </div>
-                {!view.requiresLimit && (
-                  <p className="text-[11px] text-muted-foreground">Use 0 for no limit.</p>
-                )}
-                {service && (
-                  <label className="flex items-start gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 size-3.5 accent-foreground"
-                      checked={swapDisabled}
-                      onChange={(event) => {
-                        setSwapDisabled(event.target.checked);
-                        setStaged(false);
-                      }}
-                    />
-                    <span>
-                      Disable swap
-                      <span className="block text-[11px]">
-                        Runs this container without swap. Requires a positive memory limit and a
-                        Docker host with swap accounting enabled.
-                      </span>
-                    </span>
-                  </label>
-                )}
-                {view.capacity && view.capacity.source !== "unknown" && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Server capacity: {formatCpuCores(view.capacity.cpuCores)} ·{" "}
-                    {formatMemoryMb(view.capacity.memoryMb)}
-                  </p>
-                )}
-                <Button
-                  type="submit"
-                  className="w-full"
-                  variant="outline"
-                  disabled={disabled || staged}
-                >
-                  {staged ? "Added to pending changes" : "Stage resource change"}
-                </Button>
-              </form>
-            )}
-          </>
-        )}
-        {error && (
-          <div role="alert" className="space-y-2 text-xs text-danger">
-            <p>{error}</p>
-            {!view && (
-              <Button variant="outline" size="sm" onClick={() => setRevision((value) => value + 1)}>
-                Retry
-              </Button>
-            )}
-          </div>
-        )}
-      </section>
       {project.deployTarget !== "cluster" && (
-        <section className="space-y-3 border-t border-border/50 pt-5">
-          <p className="text-sm font-medium">Server placement</p>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {project.serverName ||
-              (project.deployTarget === "cloud"
-                ? "OpenShip Cloud"
-                : project.deployTarget === "local"
-                  ? "Local machine"
-                  : "Current server")}
-          </p>
+        <section className="space-y-3" aria-label="Clone">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <UiIcon name="server" className="size-4 shrink-0" />
+            <span className="truncate">
+              {project.serverName ||
+                (project.deployTarget === "cloud"
+                  ? "OpenShip Cloud"
+                  : project.deployTarget === "local"
+                    ? "Local machine"
+                    : "Current server")}
+            </span>
+          </div>
           {canPlace ? (
             <>
               <Button
-                variant="outline"
-                className="w-full justify-start gap-2"
+                variant="secondary"
+                className="w-full justify-between"
                 disabled={disabled || placementDisabled}
                 onClick={() => onPlacement("copy", service)}
               >
-                <UiIcon name="copy" />
-                {service ? "Clone service to another server" : "Clone to another server"}
+                <span className="flex items-center gap-2">
+                  <UiIcon name="copy" />
+                  {service ? "Clone service" : "Clone environment"}
+                </span>
+                <UiIcon name="arrow-right" className="size-4 rtl:rotate-180" />
               </Button>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
-                Creates an independent copy with its own data and deployment history.
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Independent copy on another server. Data does not stay in sync.
+              </p>
+              {placementDisabled && (
+                <p className="text-xs text-warning">Apply or discard pending changes first.</p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Cloning requires a deployed project on a connected Docker server.
+            </p>
+          )}
+        </section>
+      )}
+      <details className="group rounded-xl bg-muted/30">
+        <summary className="flex cursor-pointer list-none items-center gap-3 rounded-xl p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 [&::-webkit-details-marker]:hidden">
+          <UiIcon name="sliders" className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">Advanced</span>
+            <span className="block text-xs text-muted-foreground">
+              {service ? "CPU, memory & swap" : "Resource limits"}
+              {canPlace ? " · Move environment" : ""}
+            </span>
+          </span>
+          <UiIcon
+            name="chevron-down"
+            className="size-4 shrink-0 text-muted-foreground group-open:rotate-180"
+          />
+        </summary>
+        <div className="space-y-5 px-3 pb-3">
+          <section className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              {project.deployTarget === "cluster"
+                ? "Limits per instance."
+                : service
+                  ? "Limits for this service."
+                  : "Environment defaults. Service overrides are preserved."}
+            </p>
+            {staticApplication ? (
+              <p className="rounded-xl bg-muted/40 p-3 text-xs text-muted-foreground">
+                Static files have no running container to resize.
+              </p>
+            ) : (
+              <>
+                {!view && !error && (
+                  <div
+                    role="status"
+                    className="flex items-center gap-2 text-xs text-muted-foreground"
+                  >
+                    <UiIcon name="spinner" className="size-3.5 animate-spin" />
+                    Loading resource settings…
+                  </div>
+                )}
+                {view && (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const values = {
+                        cpuCores: Number(cpu),
+                        memoryMb: Number(memory),
+                        ...(swapDisabled && { swapDisabled: true }),
+                      };
+                      const invalid =
+                        !cpu.trim() ||
+                        !memory.trim() ||
+                        !Number.isFinite(values.cpuCores) ||
+                        !Number.isFinite(values.memoryMb) ||
+                        values.cpuCores < 0 ||
+                        values.memoryMb < 0 ||
+                        !Number.isInteger(values.memoryMb);
+                      const problem = invalid
+                        ? "Enter a valid CPU limit and whole-number memory limit."
+                        : swapDisabled && !(values.memoryMb > 0)
+                          ? "Disabling swap requires a positive memory limit."
+                          : view.requiresLimit && (!values.cpuCores || !values.memoryMb)
+                            ? "This target requires explicit CPU and memory limits."
+                            : validateAgainstCapacity(
+                                { ...values, diskMb: view.production.diskMb },
+                                view.capacity ?? UNKNOWN_CAPACITY,
+                              );
+                      if (problem) {
+                        setError(problem);
+                        return;
+                      }
+                      setError(null);
+                      onStage(values, view, baseline.current);
+                      setStaged(true);
+                    }}
+                    className="space-y-3"
+                  >
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="space-y-1.5 text-xs text-muted-foreground">
+                        CPU cores
+                        <input
+                          className="topology-input"
+                          type="number"
+                          min={view.requiresLimit ? MIN_CPU_CORES : 0}
+                          step="any"
+                          value={cpu}
+                          onChange={(event) => {
+                            setCpu(event.target.value);
+                            setStaged(false);
+                          }}
+                          required
+                        />
+                      </label>
+                      <label className="space-y-1.5 text-xs text-muted-foreground">
+                        Memory (MB)
+                        <input
+                          className="topology-input"
+                          type="number"
+                          min={view.requiresLimit ? MIN_MEMORY_MB : 0}
+                          step="1"
+                          value={memory}
+                          onChange={(event) => {
+                            setMemory(event.target.value);
+                            setStaged(false);
+                          }}
+                          required
+                        />
+                      </label>
+                    </div>
+                    {!view.requiresLimit && (
+                      <p className="text-[11px] text-muted-foreground">Use 0 for no limit.</p>
+                    )}
+                    {service && (
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-xs">Disable swap</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Requires a memory limit and host swap support.
+                          </p>
+                        </div>
+                        <Switch
+                          ariaLabel="Disable swap"
+                          checked={swapDisabled}
+                          disabled={disabled}
+                          onChange={(checked) => {
+                            setSwapDisabled(checked);
+                            setStaged(false);
+                          }}
+                        />
+                      </div>
+                    )}
+                    {view.capacity && view.capacity.source !== "unknown" && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Server capacity: {formatCpuCores(view.capacity.cpuCores)} ·{" "}
+                        {formatMemoryMb(view.capacity.memoryMb)}
+                      </p>
+                    )}
+                    <Button
+                      type="submit"
+                      className="w-full"
+                      variant="outline"
+                      disabled={disabled || staged}
+                    >
+                      {staged ? "Added to pending changes" : "Stage changes"}
+                    </Button>
+                  </form>
+                )}
+              </>
+            )}
+            {error && (
+              <div role="alert" className="space-y-2 text-xs text-danger">
+                <p>{error}</p>
+                {!view && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRevision((value) => value + 1)}
+                  >
+                    Retry
+                  </Button>
+                )}
+              </div>
+            )}
+          </section>
+          {canPlace && (
+            <section className="space-y-3 border-t border-border/50 pt-4">
+              <p className="text-xs text-muted-foreground">
+                Move every service in this environment to another server.
               </p>
               <Button
                 variant="outline"
@@ -272,24 +312,10 @@ export function TopologyScaling({
                 <UiIcon name="arrows-left-right" />
                 Move environment
               </Button>
-              {placementDisabled && (
-                <p className="text-[11px] text-muted-foreground">
-                  Apply or discard pending changes before cloning or moving.
-                </p>
-              )}
-              {service && (
-                <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Moving relocates all services in this environment together.
-                </p>
-              )}
-            </>
-          ) : (
-            <p className="rounded-xl bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
-              Clone and move are available for deployed projects on connected Docker servers.
-            </p>
+            </section>
           )}
-        </section>
-      )}
+        </div>
+      </details>
     </div>
   );
 }

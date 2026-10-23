@@ -834,6 +834,11 @@ Webhook delivery rows show a short, localized explanation below the repository w
 ## Topology scaling
 
 Node Overview offers a compact Scale action that opens the existing inspector.
+Keep replica controls directly accessible. For ordinary Docker services, lead with
+the existing Clone action and identify it as an independent copy, not synchronized
+replication. CPU, memory, swap and moving the environment belong in a collapsed
+Advanced section. Use short scope hints and the shared swap switch; retain resource
+validation, pending-change review and destination capability checks.
 Application replica changes show the observed and requested counts in a review
 before calling the existing configuration release API. Preserve stale-release
 preconditions and action locks. Unsupported Kubernetes Compose workloads, storage,
