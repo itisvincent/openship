@@ -43,6 +43,17 @@ export interface ClusterWorkloadConfig {
   mounts?: ClusterVolumeMount[];
 }
 
+/** One autoscale decision, kept for the "why did it scale" panel. */
+export type AutoscaleEvent = {
+  id: string;
+  createdAt: string;
+  action: "scale_up" | "scale_down" | "hold" | "fail" | "suspend";
+  fromReplicas: number;
+  toReplicas: number | null;
+  observedCpuPercent: number | null;
+  reason: string;
+};
+
 export interface ClusterWorkloadStatus {
   desired: number;
   ready: number;
@@ -59,6 +70,21 @@ export interface ClusterWorkloadStatus {
     ready: boolean;
     phase: string;
     restarts: number;
+  }>;
+}
+
+/** Observed per-instance resource usage — exactly what metrics.k8s.io reports,
+ *  so the autoscaler and dashboards share one shape without guessing units.
+ *  cpuMillicores is cumulative usage per instance window; memoryMiB is the
+ *  working set. Usage is missing (null) while a pod is starting, so partial
+ *  windows never read as zero consumption. */
+export interface ClusterWorkloadMetrics {
+  cpuMillicores: number;
+  memoryMiB: number;
+  pods: Array<{
+    name: string;
+    cpuMillicores: number | null;
+    memoryMiB: number | null;
   }>;
 }
 

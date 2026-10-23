@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/Modal";
 import { useResourceScope } from "@/hooks/use-scoped-resource";
 import { TopologyScalingSetup } from "./TopologyScalingSetup";
+import { AutoscalePolicyPanel } from "./AutoscalePolicyPanel";
 import { CustomSelect } from "@/components/ui/CustomSelect";
 import { Checkbox } from "@/components/ui/Checkbox";
 import {
@@ -566,6 +567,15 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
             <p className="text-xs leading-relaxed text-muted-foreground">
               Keep capacity for the current and new instances during deployment.
             </p>
+          )}
+          {!!clusterId && ready && !databaseNeedsOperator && (
+            <div className="border-t pt-3">
+              <AutoscalePolicyPanel
+                projectId={project.id}
+                clusterReady={ready}
+                disabled={disabled || busy}
+              />
+            </div>
           )}
           {(view.activeClusterId || view.internalHost) && (
             <details className="text-xs">

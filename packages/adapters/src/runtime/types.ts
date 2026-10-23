@@ -50,6 +50,10 @@ export type RuntimeCapability =
   | "multiServiceDeploy"
   /** Scheduler-level replica/task status, independent of Docker task containers. */
   | "clusterStatus"
+  /** In-place scheduler replica count change on a live release (no redeploy). */
+  | "scaleInPlace"
+  /** Aggregated per-intance resource usage from the metrics source. */
+  | "podMetrics"
   /** A service release can be stopped, restored on failure, then retired on success. */
   | "retainedServiceCutover"
   /** Mount resolved service config files through the scheduler, without host bind paths. */
@@ -217,6 +221,20 @@ export interface RuntimeAdapter {
   /** Check if a specific feature is supported */
   supports(cap: RuntimeCapability): boolean;
   status?(containerId: string): Promise<import("@repo/core").ClusterWorkloadStatus>;
+  /**
+   * Change the scheduler-level replica count of a LIVE release in place —
+   * WITHOUT a new Deployment/release. Must commit only this count (annotation
+   * plus workload spec together), tolerate a concurrent 409 by re-reading, and
+   * resolve when the new count is observed ready. Callers gate on
+   * `supports("scaleInPlace")`. Returns when the change has taken effect.
+   */
+  scaleInPlace?(containerId: string, replicas: number): Promise<void>;
+  /**
+   * Read aggregated resource usage for a deployment's instances. Callers gate on
+   * `supports("podMetrics")`; a missing metrics source throws, it never reads
+   * as zero usage.
+   */
+  podMetrics?(containerId: string): Promise<import("@repo/core").ClusterWorkloadMetrics>;
   /** Prepare an artifact's settings/storage before stopping its previous release. */
   prepareDeployment?(config: DeployConfig): Promise<void>;
 

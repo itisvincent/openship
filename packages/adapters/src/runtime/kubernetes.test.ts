@@ -65,6 +65,12 @@ function setup(
       if (body.metadata.resourceVersion !== found.metadata.resourceVersion)
         throw new KubernetesApiError(409, "Changed");
       found.spec = { ...found.spec, ...body.spec };
+      // Real Kubernetes merges each subfield of a strategic-merge patch.
+      if (body.metadata.annotations)
+        found.metadata.annotations = {
+          ...found.metadata.annotations,
+          ...body.metadata.annotations,
+        };
       found.metadata.resourceVersion = String(version++);
       found.metadata.generation!++;
       if (found.kind === "Deployment") ready(found);
@@ -611,6 +617,66 @@ describe("Kubernetes workload lifecycle", () => {
     });
     await runtime.start(result.containerId!);
     expect((await runtime.status(result.containerId!)).desired).toBe(3);
+  });
+  it("scales a live release in place without creating a new deployment", async () => {
+    const { runtime, request } = setup();
+    const result = await runtime.deploy(config());
+    const posts = request.mock.calls.filter(
+      ([method, path]) => method === "POST" && path.endsWith("/deployments"),
+    );
+    await runtime.scaleInPlace(result.containerId!, 5);
+    const deployment = await runtime.status(result.containerId!);
+    expect(deployment.desired).toBe(5);
+    expect(posts).toHaveLength(1); // same release, no blue/green redeploy
+  });
+  it("scales and restores from the autoscaler's last intent, not a stale pre-scale count", async () => {
+    const { runtime } = setup();
+    const result = await runtime.deploy(config());
+    await runtime.scaleInPlace(result.containerId!, 4);
+    await runtime.stop(result.containerId!);
+    await runtime.start(result.containerId!);
+    expect((await runtime.status(result.containerId!)).desired).toBe(4);
+  });
+  it("rejects a replica count outside the configurable range", async () => {
+    const { runtime } = setup();
+    const result = await runtime.deploy(config());
+    await expect(runtime.scaleInPlace(result.containerId!, 0)).rejects.toThrow();
+    await expect(runtime.scaleInPlace(result.containerId!, 101)).rejects.toThrow();
+  });
+  it("fails closed when the cluster metrics source is missing", async () => {
+    const { runtime } = setup();
+    const result = await runtime.deploy(config());
+    await expect(runtime.podMetrics(result.containerId!)).rejects.toMatchObject({
+      code: "CLUSTER_METRICS_UNAVAILABLE",
+    });
+  });
+  it("aggregates per-instance usage from the metrics source", async () => {
+    const { runtime, request } = setup();
+    const result = await runtime.deploy(config());
+    const metricsPath =
+      `/apis/metrics.k8s.io/v1beta1/namespaces/${runtime.namespace}/pods` +
+      `?labelSelector=${encodeURIComponent("openship.io/deployment=deploy-1")}`;
+    const original = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, path: string, body?: any) => {
+      if (method === "GET" && path === metricsPath)
+        return {
+          items: [
+            {
+              metadata: { name: "release-a" },
+              containers: [{ name: "app", usage: { cpu: "100m", memory: "64Mi" } }],
+            },
+            {
+              metadata: { name: "release-b" },
+              containers: [{ name: "app", usage: { cpu: "50m", memory: "32Mi" } }],
+            },
+          ],
+        } as any;
+      return original(method, path, body);
+    });
+    const metrics = await runtime.podMetrics(result.containerId!);
+    expect(metrics.pods).toHaveLength(2);
+    expect(metrics.cpuMillicores).toBe(150);
+    expect(metrics.memoryMiB).toBe(96);
   });
   it("keeps the old internal service when a new rollout fails and removes only the failed release", async () => {
     const { runtime, resources, watch } = setup();

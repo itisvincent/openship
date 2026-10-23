@@ -620,6 +620,29 @@ const TABLES: ReadonlyArray<TableSpec> = [
       { in: "project", via: "fk", column: "projectId" },
     ],
   },
+  // Autoscaling intent (one policy per project) and the decision trail. Not
+  // encryption-bearing; events are derivable audit data but travel with the
+  // project so a restored clone keeps its "why did it scale" history.
+  {
+    sqlName: "project_autoscale_policy",
+    table: schema.projectAutoscalePolicy,
+    hasOrganizationId: false,
+    scopes: [
+      { in: "instance", via: "all-rows" },
+      { in: "organization", via: "fk", column: "projectId" },
+      { in: "project", via: "fk", column: "projectId" },
+    ],
+  },
+  {
+    sqlName: "project_autoscale_event",
+    table: schema.projectAutoscaleEvent,
+    hasOrganizationId: false,
+    scopes: [
+      { in: "instance", via: "all-rows" },
+      { in: "organization", via: "fk", column: "projectId" },
+      { in: "project", via: "fk", column: "projectId" },
+    ],
+  },
   // Inbound webhook SOURCES (Settings → Webhooks). MUST be catalogued: `domain`
   // carries a `webhookSourceId` FK to it, so the first row this table ever holds
   // makes an import fail on a violation no reordering can fix. Latent rather than
