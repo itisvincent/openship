@@ -54,7 +54,21 @@ export type AutoscaleEvent = {
   reason: string;
 };
 
+/** A scale decision may only change the exact workload generation it observed. */
+export interface ClusterScalePrecondition {
+  uid: string;
+  generation: number;
+  replicas: number;
+  operationId: string;
+}
+
 export interface ClusterWorkloadStatus {
+  /** Runtime receipt for recoverable, conditional in-place scaling. */
+  scaling?: {
+    uid: string;
+    operationId: string | null;
+    cpuLimitMillicores: number | null;
+  };
   desired: number;
   ready: number;
   available: number;
@@ -83,6 +97,7 @@ export interface ClusterWorkloadMetrics {
   memoryMiB: number;
   pods: Array<{
     name: string;
+    timestamp?: string;
     cpuMillicores: number | null;
     memoryMiB: number | null;
   }>;

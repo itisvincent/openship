@@ -22,6 +22,7 @@ import { assertClusterManagementAvailable } from "../../system/server-cluster.op
 import { autoscaleEligibilityReason } from "./autoscaler";
 import { findActiveDeployment } from "../../../lib/active-deployment";
 import type { DeploymentMeta } from "../../../lib/deployment-runtime";
+import { withProjectStateLock } from "../../../lib/project-runtime-lock";
 
 const present = (
   row: NonNullable<Awaited<ReturnType<typeof repos.autoscale.get>>>,
@@ -66,42 +67,52 @@ export function createAutoscaleOperations(
     },
     async setAutoscalePolicy(ctx, id, input): Promise<ProjectAutoscalePolicy> {
       assertClusterManagementAvailable();
-      const project = await repos.project.findById(id);
-      assertResourceInOrg(project, "Project", ctx.organizationId, id);
-      if (project.appTemplateId === "openship")
-        throw new AppError(
-          "The OpenShip control plane cannot be autoscaled.",
-          422,
-          "CLUSTER_WORKLOAD_UNSUPPORTED",
-        );
-      // Domain rules before the write, so a bad policy is a clean 422 instead
-      // of the table's raw check constraint.
-      if (input.maxReplicas < input.minReplicas)
-        throw new AppError(
-          "Max instances must be at least min instances.",
-          422,
-          "CLUSTER_CONFIG_INVALID",
-        );
-      if (input.enabled) {
-        const active = await findActiveDeployment(project);
-        const meta = (active?.meta as DeploymentMeta | null) ?? null;
-        const eligibility = autoscaleEligibilityReason(project, meta);
-        if (eligibility)
-          throw new AppError(eligibility, 422, "AUTOSCALE_POLICY_INELIGIBLE");
-      }
-      const row = await repos.autoscale.save(id, {
-        enabled: input.enabled,
-        targetCpuPercent: input.targetCpuPercent,
-        minReplicas: input.minReplicas,
-        maxReplicas: input.maxReplicas,
-        stepSize: input.stepSize,
-        cooldownSeconds: input.cooldownSeconds,
-        suspendAfterFailures: input.suspendAfterFailures,
-        ...(input.rearm ? { rearm: input.rearm } : {}),
-        expectedUpdatedAt: input.expectedUpdatedAt,
+      return withProjectStateLock(id, async () => {
+        const project = await repos.project.findById(id);
+        assertResourceInOrg(project, "Project", ctx.organizationId, id);
+        if (project.appTemplateId === "openship")
+          throw new AppError(
+            "The OpenShip control plane cannot be autoscaled.",
+            422,
+            "CLUSTER_WORKLOAD_UNSUPPORTED",
+          );
+        // Domain rules before the write, so a bad policy is a clean 422 instead
+        // of the table's raw check constraint.
+        if (input.maxReplicas < input.minReplicas)
+          throw new AppError(
+            "Max instances must be at least min instances.",
+            422,
+            "CLUSTER_CONFIG_INVALID",
+          );
+        if (input.enabled) {
+          const runtime = project.clusterId
+            ? await repos.clusterRuntime.get(ctx.organizationId, project.clusterId)
+            : null;
+          if (runtime?.provider !== "k3s" || runtime.status !== "ready")
+            throw new AppError(
+              "Autoscaling requires a ready K3s cluster.",
+              422,
+              "AUTOSCALE_POLICY_INELIGIBLE",
+            );
+          const active = await findActiveDeployment(project);
+          const meta = (active?.meta as DeploymentMeta | null) ?? null;
+          const eligibility = autoscaleEligibilityReason(project, meta);
+          if (eligibility) throw new AppError(eligibility, 422, "AUTOSCALE_POLICY_INELIGIBLE");
+        }
+        const row = await repos.autoscale.save(id, {
+          enabled: input.enabled,
+          targetCpuPercent: input.targetCpuPercent,
+          minReplicas: input.minReplicas,
+          maxReplicas: input.maxReplicas,
+          stepSize: input.stepSize,
+          cooldownSeconds: input.cooldownSeconds,
+          suspendAfterFailures: input.suspendAfterFailures,
+          ...(input.rearm ? { rearm: input.rearm } : {}),
+          expectedUpdatedAt: input.expectedUpdatedAt,
+        });
+        record(ctx, id, { action: "autoscale.policy", ...input });
+        return present(row);
       });
-      record(ctx, id, { action: "autoscale.policy", ...input });
-      return present(row);
     },
     async listAutoscaleEvents(_ctx, id) {
       assertClusterManagementAvailable();
@@ -135,7 +146,7 @@ export async function suspendAutoscaleOnOverride(
         ? `replicas changed to ${to} (from ${from})`
         : "the active release changed";
     const reason = `${change[0].toUpperCase()}${change.slice(1)} outside the autoscaler. It suspended this policy and is no longer changing the instance count.`;
-    await repos.autoscale.suspend(projectId, reason);
+    await withProjectStateLock(projectId, () => repos.autoscale.suspend(projectId, reason));
   } catch (error) {
     observeCaughtError(error, "platform/engine/modules/projects/autoscale.operations");
   }

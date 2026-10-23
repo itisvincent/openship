@@ -1,80 +1,54 @@
-# Project autoscaling (self-hosted clusters)
+# Project autoscaling (self-hosted K3s)
 
-OpenShip ships an in-app autoscaler for projects that run on a Kubernetes
-(K3s) server cluster. It is self-hosted only — the same scope as the cluster
-feature itself — and it is deliberately **in-app**: only OpenShip can make a
-scale step cheap, show its state in the dashboard, and stop cleanly when a
-human takes over.
+Autoscaling is off by default and requires an explicit per-project save. It uses
+existing project authorization, project runtime locks, verified Kubernetes
+transport and the Jobs scheduler. Docker, Swarm, managed Cloud, databases,
+static sites and Kubernetes multi-service projects are outside this feature.
+The [user guide](../apps/web/content/docs/guides/mcp-clusters-and-scaling.mdx#automatic-application-scaling)
+covers configuration, supported recovery and limits.
 
-## What a scale step is
+## Mutation and recovery contract
 
-A scale step is **not** a deployment. The autoscaler patches `spec.replicas`
-on the active release in place (the same mechanism Start/Stop use), atomically
-with the saved intent annotation and the project's cluster configuration.
-Kubernetes creates or removes pods from the same immutable image; services
-never go blue/green, and no double capacity is ever needed.
+The controller observes the active release under the same project lock used by
+stop, deletion, policy changes and runtime mutations. It uses fresh metrics for
+all ready pods and their deployed CPU limit. It holds during active deployments,
+incomplete rollouts, missing/partial/stale metrics, cooldown or explicit suspension.
+The configured step is a maximum delta, including convergence to edited bounds.
+Scale-down decisions require at least five minutes since the last accepted step.
 
-A full configuration release only happens when something other than the count
-changes — exactly like manual scaling.
+Before patching Kubernetes, it persists one pending operation containing the
+active deployment, project revision, workload UID/generation, old/new counts and
+operation ID. The patch checks this precondition on every resource-version retry
+and records its operation ID beside the replica intent annotation. It changes the
+existing Deployment, without building or creating another release.
 
-## How the loop works
+Project intent, release snapshot, decision event and pending-operation clearance
+commit in one database transaction. Kubernetes and PostgreSQL are separate
+systems: a lost response or failed database commit leaves an explicit receipt to
+reconcile on a later tick. A matching UID, generation and operation annotation
+allow bookkeeping to finish without repeating the patch. A different generation,
+release or project revision suspends further changes rather than overwriting an
+operator. Pending accepted changes can be recorded after policy disable, but a
+disabled/suspended policy cannot issue new scale requests.
 
-A recurring system job (`projects:autoscaler`, every 30 seconds) evaluates each
-enabled policy:
+Kubernetes acceptance does not mean pods are ready. The controller does not hold
+the project lock while waiting for rollout; it admits another decision only once
+all desired instances are ready, updated and available. Manual scaling continues
+to use its existing configuration deployment pipeline.
 
-1. **Observe** the active release: replica status and per-instance CPU usage
-   from the cluster's bundled metrics source, read over OpenShip's verified
-   mTLS transport. Nothing is installed; the metrics source K3s ships is used
-   as-is. Missing metrics fail closed — the tick holds, it never reads as zero
-   load.
-2. **Gate**: the release must be running and its rollout complete; a stopped
-   project (or one mid-deploy) is a human state the loop stays out of.
-3. **Decide**: average per-instance CPU against the project's CPU limit,
-   compared to the policy's target with a ±10% hysteresis band, then the
-   ±step clamp and the min/max limits. Scale-downs wait longer than scale-ups
-   (a drop must prove itself across the cooldown window).
-4. **Apply** the change in place under the project's runtime lock, record the
-   decision and its reason in the per-project event trail.
+## Cost and operational limits
 
-The cooldown is measured from the last **completed** step, not from intent
-time, so a slow rollout cannot shorten the next window.
+With no enabled policy or pending recovery, a tick performs two database reads
+and no Kubernetes calls. Healthy holds do not write policy rows or change their
+configuration revision. Failures use exponential backoff and explicit suspension;
+events are bounded to 100 per project. The Jobs module controls the recurring
+job; the internal `autoscaler_disabled` instance setting additionally stops tick
+admission. Disabling cannot cancel a request Kubernetes already accepted.
 
-## The override handshake
+Imported application configuration retains policy settings but disables them and
+drops source runtime receipts. Whole-instance recovery retains ownership state.
 
-A human outranks the autoscaler, every time:
-
-- Any manual replica change (manual scale, cluster-target change) or a
-  **rollback** **suspends** the policy automatically. Rollback is itself a
-  capacity decision — the restored release may run a different count — and the
-  autoscaler must never fight an incident operator. The dashboard shows why,
-  with a re-arm button.
-- The dashboard's save + **re-arm** is the only way the loop resumes.
-- Failure backoff: repeated tick failures retry with exponential backoff and
-  give up (suspend) after the configured number of consecutive failures.
-
-## Kill switches
-
-- **Per project**: disable the policy (or leave it suspended).
-- **Global**: instance setting `autoscaler_disabled` stops every tick.
-
-## Limits you should know about
-
-- **Control-plane SPOF.** The first control server is both the autoscaler's
-  brain and the only path to the K8s API. When it dies, the autoscaler goes
-  blind and inert — existing replicas keep running and keep serving; no new
-  scaling decisions happen until it returns. This does not change ingress
-  availability.
-- **Ingress HA is separate.** OpenShip Edge sends traffic through one cluster
-  server today. Autoscaling does not fix that; put an external load balancer /
-  floating IP in front if you need it.
-- **CPU limits are required.** Per-instance load is measured against the
-  project's CPU limit; a project without limits cannot set a policy.
-- **Not supported**: database projects (replicate through database
-  management), static sites, multi-service environments on Kubernetes, and
-  the OpenShip control plane itself.
-
-## Metrics
-
-The dashboard's scaling panel gains per-instance CPU/memory once the release
-runs on Kubernetes (the bundled metrics source). The cluster read contract
-returns it as `metrics` alongside pod readiness.
+The controller still depends on a reachable Kubernetes API, metrics-server and
+available cluster capacity. It does not add nodes, promise ingress failover or
+replace application readiness checks. Edge ingress still uses the existing
+cluster entry point; autoscaling does not provide ingress high availability.

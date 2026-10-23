@@ -15,10 +15,13 @@ CREATE TABLE "project_autoscale_policy" (
   "suspended_at" timestamp,
   "suspended_reason" text,
   "last_decision" jsonb,
+  "pending_scale" jsonb,
   "created_at" timestamp DEFAULT now() NOT NULL,
   "updated_at" timestamp DEFAULT now() NOT NULL,
   CONSTRAINT "project_autoscale_policy_project_id_unique" UNIQUE ("project_id")
 );
+--> statement-breakpoint
+ALTER TABLE "project_autoscale_policy" ADD CONSTRAINT "project_autoscale_policy_failures_check" CHECK ("suspend_after_failures" BETWEEN 1 AND 10);
 --> statement-breakpoint
 ALTER TABLE "project_autoscale_policy" ADD CONSTRAINT "project_autoscale_policy_cpu_check" CHECK ("target_cpu_percent" BETWEEN 1 AND 100);
 --> statement-breakpoint

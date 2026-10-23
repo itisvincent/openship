@@ -6,7 +6,7 @@ import type { ProjectAutoscalePolicy, AutoscaleEvent } from "@repo/contracts";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { projectAutoscaleApi } from "@/lib/api/project-autoscale";
-import { getApiErrorMessage } from "@/lib/api";
+import { getApiErrorMessage, getApiErrorCode } from "@/lib/api";
 import { observedAllSettled } from "@repo/core/diagnostics";
 
 type Props = {
@@ -32,7 +32,12 @@ const DEFAULTS = {
  * only way autoscaling starts, a suspension banner is the only way it stops
  * after a human edit or a give-up, and the event trail is the "why did it
  * scale" record. Nothing here auto-applies without an explicit save. */
-export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPolicyChanged }: Props) {
+export function AutoscalePolicyPanel({
+  projectId,
+  clusterReady,
+  disabled,
+  onPolicyChanged,
+}: Props) {
   const [policy, setPolicy] = useState<ProjectAutoscalePolicy | null>(null);
   const [absent, setAbsent] = useState(false);
   const [events, setEvents] = useState<AutoscaleEvent[]>([]);
@@ -45,7 +50,13 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
   const pending = useRef(false);
 
   useEffect(() => {
+    if (!clusterReady || disabled) return;
     let current = true;
+    setPolicy(null);
+    setAbsent(false);
+    setEnabled(false);
+    setForm(DEFAULTS);
+    setEvents([]);
     setLoaded(false);
     setError(null);
     void observedAllSettled(
@@ -69,8 +80,14 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
         onPolicyChanged?.(row);
       } else {
         setPolicy(null);
-        setAbsent(true);
+        const absent = getApiErrorCode(results[0].reason) === "AUTOSCALE_POLICY_ABSENT";
+        setAbsent(absent);
+        setEnabled(false);
         setForm(DEFAULTS);
+        if (!absent)
+          setError(
+            getApiErrorMessage(results[0].reason, "Autoscaling settings could not be loaded."),
+          );
         onPolicyChanged?.(null);
       }
       if (results[1].status === "fulfilled") setEvents(results[1].value.events);
@@ -80,10 +97,21 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
     return () => {
       current = false;
     };
-  }, [projectId, revision, onPolicyChanged]);
+  }, [projectId, revision, onPolicyChanged, clusterReady, disabled]);
 
   if (!clusterReady || disabled) return null;
   if (!loaded) return null;
+  if (!policy && !absent)
+    return (
+      <div className="space-y-2 text-xs">
+        <p role="alert" className="text-danger">
+          {error}
+        </p>
+        <Button size="sm" variant="secondary" onClick={() => setRevision((value) => value + 1)}>
+          Retry loading autoscaling
+        </Button>
+      </div>
+    );
 
   const suspended = !!policy?.suspendedAt;
   const unsaved =
@@ -96,9 +124,7 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
     form.cooldownSeconds !== policy.cooldownSeconds ||
     form.suspendAfterFailures !== policy.suspendAfterFailures;
   const boundsOk = form.minReplicas >= 1 && form.maxReplicas >= form.minReplicas;
-  const rearm = suspended && enabled && form.minReplicas === policy.minReplicas &&
-    form.maxReplicas === policy.maxReplicas &&
-    form.targetCpuPercent === policy.targetCpuPercent;
+  const rearm = suspended && enabled;
 
   const save = async () => {
     if (pending.current || !boundsOk) return;
@@ -110,12 +136,11 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
         ...form,
         enabled,
         ...(suspended && rearm ? { rearm: true as const } : {}),
-        expectedUpdatedAt: policy?.updatedAt ?? new Date().toISOString(),
+        expectedUpdatedAt: policy?.updatedAt ?? null,
       });
       setPolicy(row);
       setEnabled(row.enabled);
-      const trail = await projectAutoscaleApi.events(projectId);
-      setEvents(trail.events);
+      setAbsent(false);
       onPolicyChanged?.(row);
     } catch (reason) {
       setError(getApiErrorMessage(reason, "The autoscaling policy could not be saved."));
@@ -131,19 +156,35 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
         <UiIcon name="gauge" className="size-4 text-info" /> Automatic scaling
       </h3>
       <label className="flex items-start gap-2 text-xs leading-relaxed">
-        <Checkbox checked={enabled} onCheckedChange={setEnabled} disabled={busy} aria-label="Enable autoscaling" />
+        <Checkbox
+          checked={enabled}
+          onCheckedChange={setEnabled}
+          disabled={busy}
+          aria-label="Enable autoscaling"
+        />
         <span>
-          The autoscaler watches CPU usage and adds or removes instances one step at a time,
-          between the limits below. {enabled && !suspended ? "It currently owns the instance count." : "It stays idle until you save it enabled."}
+          The autoscaler watches CPU usage and adds or removes instances one step at a time, between
+          the limits below.{" "}
+          {policy?.enabled && !suspended
+            ? "Automatic scaling is enabled."
+            : "It stays idle until you save it enabled."}
         </span>
       </label>
       {suspended && (
-        <div role="status" className="space-y-1 rounded-xl bg-muted/40 p-3 text-xs leading-relaxed text-warning">
+        <div
+          role="status"
+          className="space-y-1 rounded-xl bg-muted/40 p-3 text-xs leading-relaxed text-warning"
+        >
           <p className="flex items-center gap-1.5 font-medium">
             <UiIcon name="alert-circle" className="size-3.5" /> Autoscaling is suspended
           </p>
-          <p>{policy?.suspendedReason ?? "A change moved the instance count outside the autoscaler."}</p>
-          <p>Review the count, then re-arm the policy with the same limits to resume.</p>
+          <p>
+            {policy?.suspendedReason ?? "A change moved the instance count outside the autoscaler."}
+          </p>
+          <p>
+            If instances were changed outside Openship, apply that count in manual scaling first.
+            Then review the settings and select Resume autoscaling.
+          </p>
         </div>
       )}
       <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
@@ -156,7 +197,12 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
             max={100}
             value={form.targetCpuPercent}
             disabled={busy}
-            onChange={(event) => setForm({ ...form, targetCpuPercent: clampInt(event.target.value, 1, 100, form.targetCpuPercent) })}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                targetCpuPercent: clampInt(event.target.value, 1, 100, form.targetCpuPercent),
+              })
+            }
           />
         </label>
         <label className="block space-y-1.5">
@@ -169,7 +215,12 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
             step={30}
             value={form.cooldownSeconds}
             disabled={busy}
-            onChange={(event) => setForm({ ...form, cooldownSeconds: clampInt(event.target.value, 30, 3600, form.cooldownSeconds) })}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                cooldownSeconds: clampInt(event.target.value, 30, 3600, form.cooldownSeconds),
+              })
+            }
           />
         </label>
         <label className="block space-y-1.5">
@@ -181,7 +232,12 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
             max={100}
             value={form.minReplicas}
             disabled={busy}
-            onChange={(event) => setForm({ ...form, minReplicas: clampInt(event.target.value, 1, 100, form.minReplicas) })}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                minReplicas: clampInt(event.target.value, 1, 100, form.minReplicas),
+              })
+            }
           />
         </label>
         <label className="block space-y-1.5">
@@ -193,7 +249,12 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
             max={100}
             value={form.maxReplicas}
             disabled={busy}
-            onChange={(event) => setForm({ ...form, maxReplicas: clampInt(event.target.value, 1, 100, form.maxReplicas) })}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                maxReplicas: clampInt(event.target.value, 1, 100, form.maxReplicas),
+              })
+            }
           />
         </label>
         <label className="block space-y-1.5">
@@ -205,7 +266,9 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
             max={10}
             value={form.stepSize}
             disabled={busy}
-            onChange={(event) => setForm({ ...form, stepSize: clampInt(event.target.value, 1, 10, form.stepSize) })}
+            onChange={(event) =>
+              setForm({ ...form, stepSize: clampInt(event.target.value, 1, 10, form.stepSize) })
+            }
           />
         </label>
         <label className="block space-y-1.5">
@@ -217,7 +280,17 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
             max={10}
             value={form.suspendAfterFailures}
             disabled={busy}
-            onChange={(event) => setForm({ ...form, suspendAfterFailures: clampInt(event.target.value, 1, 10, form.suspendAfterFailures) })}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                suspendAfterFailures: clampInt(
+                  event.target.value,
+                  1,
+                  10,
+                  form.suspendAfterFailures,
+                ),
+              })
+            }
           />
         </label>
       </div>
@@ -227,9 +300,14 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
         </p>
       )}
       {(unsaved || suspended) && (
-        <Button className="w-full" size="sm" disabled={busy || !boundsOk} onClick={() => void save()}>
+        <Button
+          className="w-full"
+          size="sm"
+          disabled={busy || !boundsOk}
+          onClick={() => void save()}
+        >
           {busy && <UiIcon name="spinner" className="size-4 animate-spin" />}
-          {suspended && rearm ? "Re-arm autoscaling" : "Save policy"}
+          {suspended && rearm ? "Resume autoscaling" : "Save policy"}
         </Button>
       )}
       {events.length > 0 && (
@@ -256,7 +334,9 @@ export function AutoscalePolicyPanel({ projectId, clusterReady, disabled, onPoli
         </details>
       )}
       {error && (
-        <p role="alert" className="text-xs text-danger">{error}</p>
+        <p role="alert" className="text-xs text-danger">
+          {error}
+        </p>
       )}
     </section>
   );

@@ -26,7 +26,7 @@ import type {
   ShellOptions,
   ShellSession,
 } from "../types";
-import type { ComposeAdvanced, StackRole } from "@repo/core";
+import type { ComposeAdvanced, StackRole, ClusterScalePrecondition, ClusterWorkloadMetrics } from "@repo/core";
 import type { BuildLogger } from "./build-pipeline";
 import type { PortProbeExecutor } from "../system/port-listen";
 import type { ContainerStabilitySample } from "./stability";
@@ -224,17 +224,17 @@ export interface RuntimeAdapter {
   /**
    * Change the scheduler-level replica count of a LIVE release in place —
    * WITHOUT a new Deployment/release. Must commit only this count (annotation
-   * plus workload spec together), tolerate a concurrent 409 by re-reading, and
-   * resolve when the new count is observed ready. Callers gate on
-   * `supports("scaleInPlace")`. Returns when the change has taken effect.
+   * plus workload spec together). Re-read resource-version conflicts while
+   * preserving the caller's workload precondition. Callers gate on
+   * `supports("scaleInPlace")`. Returns on acceptance; status reports readiness.
    */
-  scaleInPlace?(containerId: string, replicas: number): Promise<void>;
+  scaleInPlace?(containerId: string, replicas: number, precondition?: ClusterScalePrecondition): Promise<void>;
   /**
    * Read aggregated resource usage for a deployment's instances. Callers gate on
    * `supports("podMetrics")`; a missing metrics source throws, it never reads
    * as zero usage.
    */
-  podMetrics?(containerId: string): Promise<import("@repo/core").ClusterWorkloadMetrics>;
+  podMetrics?(containerId: string): Promise<ClusterWorkloadMetrics>;
   /** Prepare an artifact's settings/storage before stopping its previous release. */
   prepareDeployment?(config: DeployConfig): Promise<void>;
 

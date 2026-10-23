@@ -1,12 +1,9 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, isNotNull, lte, or, sql } from "drizzle-orm";
 import { AppError, generateId } from "@repo/core";
 import type { AutoscaleEvent } from "@repo/core";
-import type { Database } from "../client";
-import {
-  project,
-  projectAutoscalePolicy,
-  projectAutoscaleEvent,
-} from "../schema";
+import type { Database, DatabaseTransaction } from "../client";
+import { project, deployment, projectAutoscalePolicy, projectAutoscaleEvent } from "../schema";
+import type { AutoscalePendingScale } from "../schema/project-autoscale";
 import { withProjectConfigurationWrite } from "./project-work-admission";
 
 /** Recent events per project are capped so one hot project cannot grow the
@@ -27,7 +24,7 @@ export interface SetAutoscalePolicyInput {
   /** Operator confirms a suspended policy should resume ownership. */
   rearm?: true;
   /** CAS precondition against the saved policy row; ignored when absent. */
-  expectedUpdatedAt?: string;
+  expectedUpdatedAt?: string | null;
 }
 
 const FAILURE_BACKOFF_MS = (failures: number) =>
@@ -36,45 +33,77 @@ const FAILURE_BACKOFF_MS = (failures: number) =>
 export function createAutoscaleRepo(db: Database) {
   const owned = (projectId: string) => eq(projectAutoscalePolicy.projectId, projectId);
 
+  async function insertEvent(
+    tx: DatabaseTransaction,
+    projectId: string,
+    event: Omit<AutoscaleEvent, "id">,
+    cooldownSeconds?: number,
+  ) {
+    const row = { ...event, id: generateId("ase") };
+    await tx.insert(projectAutoscaleEvent).values({
+      ...row,
+      projectId,
+      createdAt: new Date(row.createdAt),
+      observedCpuPercent:
+        row.observedCpuPercent === null ? null : Math.round(row.observedCpuPercent),
+      cooldownSeconds: cooldownSeconds ?? null,
+    });
+    await tx.execute(sql`
+      DELETE FROM "project_autoscale_event" WHERE "project_id" = ${projectId}
+      AND "id" NOT IN (SELECT "id" FROM "project_autoscale_event"
+        WHERE "project_id" = ${projectId} ORDER BY "created_at" DESC, "id" DESC LIMIT ${EVENTS_PER_PROJECT})`);
+    await tx.update(projectAutoscalePolicy).set({ lastDecision: row }).where(owned(projectId));
+  }
+
   return {
     async get(projectId: string): Promise<AutoscalePolicyRecord | null> {
       const [row] = await db.select().from(projectAutoscalePolicy).where(owned(projectId));
       return row ?? null;
     },
 
-    async listEnabled(): Promise<AutoscalePolicyRecord[]> {
+    async listDue(): Promise<AutoscalePolicyRecord[]> {
       return db
         .select()
         .from(projectAutoscalePolicy)
-        .where(eq(projectAutoscalePolicy.enabled, 1));
+        .where(
+          and(
+            or(
+              isNotNull(projectAutoscalePolicy.pendingScale),
+              and(
+                eq(projectAutoscalePolicy.enabled, 1),
+                isNull(projectAutoscalePolicy.suspendedAt),
+              ),
+            ),
+            or(
+              isNull(projectAutoscalePolicy.nextAttemptAt),
+              lte(projectAutoscalePolicy.nextAttemptAt, new Date()),
+            ),
+          ),
+        );
     },
 
     /** Only this path (operator, via the dashboard) may clear a suspension.
      *  CAS on the saved policy's updatedAt keeps two dashboard tabs from
      *  silently overwriting each other (or an operator's re-arm from landing
      *  on a policy the loop just re-suspended). */
-    async save(
-      projectId: string,
-      input: SetAutoscalePolicyInput,
-    ): Promise<AutoscalePolicyRecord> {
+    async save(projectId: string, input: SetAutoscalePolicyInput): Promise<AutoscalePolicyRecord> {
       return withProjectConfigurationWrite(db, eq(project.id, projectId), async (tx) => {
-        const now = new Date();
         const [existing] = await tx
           .select()
           .from(projectAutoscalePolicy)
           .where(owned(projectId))
           .for("update");
         if (
-          input.expectedUpdatedAt &&
-          existing &&
-          existing.updatedAt.toISOString() !== input.expectedUpdatedAt
+          input.expectedUpdatedAt !== undefined &&
+          (existing?.updatedAt.toISOString() ?? null) !== input.expectedUpdatedAt
         )
           throw new AppError(
             "The autoscaling policy changed. Reload before applying these settings.",
             409,
             "AUTOSCALE_POLICY_CONFLICT",
           );
-        const rearming = input.rearm === true && input.enabled;
+        const now = new Date(Math.max(Date.now(), (existing?.updatedAt.getTime() ?? 0) + 1));
+        const rearming = !input.enabled || input.rearm === true;
         const values = {
           projectId,
           enabled: input.enabled ? 1 : 0,
@@ -104,84 +133,66 @@ export function createAutoscaleRepo(db: Database) {
       });
     },
 
-    /** Disable by operator: stops the loop and clears pending backoff. */
-    async disable(projectId: string): Promise<void> {
-      await db
-        .update(projectAutoscalePolicy)
-        .set({
-          enabled: 0,
-          suspendedAt: null,
-          suspendedReason: null,
-          nextAttemptAt: null,
-          failureCount: 0,
-          updatedAt: new Date(),
-        })
-        .where(owned(projectId));
-    },
-
     /** The autoscaler, or an override detector, suspends ownership with a
      * reason; only `save(..., { rearm: true })` clears it afterwards. An
      * already-suspended row keeps its FIRST and most human-relevant reason. */
     async suspend(projectId: string, reason: string): Promise<void> {
       await db
         .update(projectAutoscalePolicy)
-        .set({ suspendedAt: new Date(), suspendedReason: reason, updatedAt: new Date() })
-        .where(and(owned(projectId), isNull(projectAutoscalePolicy.suspendedAt)));
+        .set({
+          suspendedAt: new Date(),
+          suspendedReason: reason,
+          updatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), ${projectAutoscalePolicy.updatedAt} + interval '1 millisecond')`,
+        })
+        .where(
+          and(
+            owned(projectId),
+            eq(projectAutoscalePolicy.enabled, 1),
+            isNull(projectAutoscalePolicy.suspendedAt),
+          ),
+        );
     },
 
-    async rearm(projectId: string): Promise<void> {
-      await withProjectConfigurationWrite(db, eq(project.id, projectId), async (tx) => {
+    async recordFailure(projectId: string, suspendAfterFailures: number): Promise<void> {
+      await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(projectAutoscalePolicy)
+          .where(owned(projectId))
+          .for("update");
+        if (!current?.enabled || current.suspendedAt) return;
+        const failureCount = current.failureCount + 1;
+        const suspended = failureCount >= suspendAfterFailures;
         await tx
           .update(projectAutoscalePolicy)
           .set({
-            suspendedAt: null,
-            suspendedReason: null,
-            nextAttemptAt: null,
-            failureCount: 0,
-            updatedAt: new Date(),
+            failureCount,
+            nextAttemptAt: new Date(Date.now() + FAILURE_BACKOFF_MS(failureCount)),
+            ...(suspended
+              ? {
+                  suspendedAt: new Date(),
+                  suspendedReason: `The autoscaler failed ${failureCount} times in a row. Review the cluster, then resume it.`,
+                  updatedAt: new Date(Math.max(Date.now(), current.updatedAt.getTime() + 1)),
+                }
+              : {}),
           })
           .where(owned(projectId));
       });
     },
 
-    async recordFailure(
-      projectId: string,
-      suspendAfterFailures: number,
-    ): Promise<void> {
-      const [row] = await db
-        .update(projectAutoscalePolicy)
-        .set({
-          failureCount: sql`${projectAutoscalePolicy.failureCount} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(owned(projectId))
-        .returning();
-      if (!row) return;
-      if (row.failureCount >= suspendAfterFailures) {
-        await this.suspend(
-          projectId,
-          `The autoscaler failed ${row.failureCount} times in a row and gave up. Review the cluster, then re-arm it.`,
-        );
-        return;
-      }
-      await db
-        .update(projectAutoscalePolicy)
-        .set({ nextAttemptAt: new Date(Date.now() + FAILURE_BACKOFF_MS(row.failureCount)) })
-        .where(owned(projectId));
-    },
-
     async recordSuccess(projectId: string): Promise<void> {
       await db
         .update(projectAutoscalePolicy)
-        .set({ failureCount: 0, nextAttemptAt: null, updatedAt: new Date() })
-        .where(owned(projectId));
-    },
-
-    async setLastDecision(projectId: string, decision: AutoscaleEvent): Promise<void> {
-      await db
-        .update(projectAutoscalePolicy)
-        .set({ lastDecision: decision, updatedAt: new Date() })
-        .where(owned(projectId));
+        .set({ failureCount: 0, nextAttemptAt: null })
+        .where(
+          and(
+            owned(projectId),
+            or(
+              sql`${projectAutoscalePolicy.failureCount} > 0`,
+              isNotNull(projectAutoscalePolicy.nextAttemptAt),
+            ),
+          ),
+        );
     },
 
     async insertEvent(
@@ -189,27 +200,108 @@ export function createAutoscaleRepo(db: Database) {
       event: Omit<AutoscaleEvent, "id">,
       opts?: { cooldownSeconds?: number },
     ): Promise<void> {
-      await db.insert(projectAutoscaleEvent).values({
-        id: generateId("ase"),
-        projectId,
-        action: event.action,
-        fromReplicas: event.fromReplicas,
-        toReplicas: event.toReplicas,
-        observedCpuPercent:
-          event.observedCpuPercent === null ? null : Math.round(event.observedCpuPercent),
-        cooldownSeconds: opts?.cooldownSeconds ?? null,
-        reason: event.reason,
+      await db.transaction((tx) => insertEvent(tx, projectId, event, opts?.cooldownSeconds));
+    },
+
+    /** Persist before touching Kubernetes. A restart or lost response keeps the
+     * same operation identity; only its matching runtime receipt can commit it. */
+    async beginScale(
+      projectId: string,
+      expectedUpdatedAt: Date,
+      pendingScale: AutoscalePendingScale,
+    ): Promise<void> {
+      const [row] = await db
+        .update(projectAutoscalePolicy)
+        .set({ pendingScale })
+        .where(
+          and(
+            owned(projectId),
+            eq(projectAutoscalePolicy.enabled, 1),
+            isNull(projectAutoscalePolicy.suspendedAt),
+            isNull(projectAutoscalePolicy.pendingScale),
+            eq(projectAutoscalePolicy.updatedAt, expectedUpdatedAt),
+          ),
+        )
+        .returning();
+      if (!row)
+        throw new AppError(
+          "The autoscaling policy changed. Observe it again before scaling.",
+          409,
+          "AUTOSCALE_POLICY_CONFLICT",
+        );
+    },
+
+    async discardScale(projectId: string): Promise<void> {
+      await db
+        .update(projectAutoscalePolicy)
+        .set({ pendingScale: null })
+        .where(and(owned(projectId), isNotNull(projectAutoscalePolicy.pendingScale)));
+    },
+
+    /** Only the replica count of the already-bound active release changes here.
+     * Project intent, release snapshot, receipt and event commit together. */
+    async completeScale(projectId: string, operationId: string): Promise<void> {
+      await withProjectConfigurationWrite(db, eq(project.id, projectId), async (tx) => {
+        const [current] = await tx.select().from(project).where(eq(project.id, projectId));
+        const [policy] = await tx
+          .select()
+          .from(projectAutoscalePolicy)
+          .where(owned(projectId))
+          .for("update");
+        const pending = policy?.pendingScale;
+        if (!pending || pending.operationId !== operationId) return;
+        if (
+          !current ||
+          current.deletionInProgress ||
+          current.disabledAt ||
+          current.activeDeploymentId !== pending.deploymentId ||
+          current.clusterId !== pending.clusterId ||
+          current.updatedAt.toISOString() !== pending.projectUpdatedAt ||
+          current.clusterConfig?.replicas !== pending.replicas
+        )
+          throw new AppError(
+            "The project changed while scaling. Its new configuration was preserved.",
+            409,
+            "CLUSTER_WORKLOAD_CONFLICT",
+          );
+        const [release] = await tx
+          .update(deployment)
+          .set({
+            meta: sql`jsonb_set(${deployment.meta}, '{clusterConfig,replicas}', ${pending.toReplicas}::text::jsonb)`,
+          })
+          .where(
+            and(
+              eq(deployment.id, pending.deploymentId),
+              eq(deployment.projectId, projectId),
+              sql`${deployment.meta}->>'clusterId' = ${pending.clusterId}`,
+              sql`${deployment.meta}->'clusterConfig'->>'replicas' = ${String(pending.replicas)}`,
+            ),
+          )
+          .returning();
+        if (!release)
+          throw new AppError(
+            "The active release changed while scaling.",
+            409,
+            "CLUSTER_WORKLOAD_CONFLICT",
+          );
+        await tx
+          .update(project)
+          .set({
+            clusterConfig: { ...current.clusterConfig, replicas: pending.toReplicas },
+            updatedAt: new Date(),
+          })
+          .where(eq(project.id, projectId));
+        await insertEvent(
+          tx,
+          projectId,
+          { ...pending.event, createdAt: new Date().toISOString() },
+          pending.cooldownSeconds,
+        );
+        await tx
+          .update(projectAutoscalePolicy)
+          .set({ pendingScale: null, failureCount: 0, nextAttemptAt: null })
+          .where(owned(projectId));
       });
-      // Prune to the newest cap in a single pass.
-      await db.execute(sql`
-        DELETE FROM "project_autoscale_event"
-        WHERE "project_id" = ${projectId}
-        AND "id" NOT IN (
-          SELECT "id" FROM "project_autoscale_event"
-          WHERE "project_id" = ${projectId}
-          ORDER BY "created_at" DESC, "id" DESC
-          LIMIT ${EVENTS_PER_PROJECT}
-        )`);
     },
 
     /** The most recent applied step (up or down), for cooldown timing. Holds

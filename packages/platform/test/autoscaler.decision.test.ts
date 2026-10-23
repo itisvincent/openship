@@ -40,14 +40,22 @@ describe("decideReplicas", () => {
     expect(decideReplicas(1, 10, policy)).toBeNull();
   });
 
+  it("converges to edited bounds one step at a time, even inside the CPU band", () => {
+    expect(decideReplicas(10, 70, policy)).toEqual({ direction: "scale_down", desired: 9 });
+    expect(decideReplicas(1, 70, { ...policy, minReplicas: 3 })).toEqual({
+      direction: "scale_up",
+      desired: 2,
+    });
+  });
+
   it("moves at most one step per tick even under extreme load", () => {
     expect(decideReplicas(2, 500, policy)).toEqual({ direction: "scale_up", desired: 3 });
   });
 
-  it("steps by the configured stepSize", () => {
+  it("does not overshoot the CPU target with a larger stepSize", () => {
     expect(decideReplicas(2, 95, { ...policy, stepSize: 3 })).toEqual({
       direction: "scale_up",
-      desired: 5,
+      desired: 3,
     });
   });
 });
@@ -82,9 +90,9 @@ describe("autoscaleEligibilityReason", () => {
   });
 
   it("refuses the OpenShip control plane and non-cluster projects", () => {
-    expect(
-      autoscaleEligibilityReason(project({ appTemplateId: "openship" }), meta),
-    ).toContain("control plane");
+    expect(autoscaleEligibilityReason(project({ appTemplateId: "openship" }), meta)).toContain(
+      "control plane",
+    );
     expect(autoscaleEligibilityReason(project({ clusterId: null }), meta)).toContain(
       "server cluster",
     );

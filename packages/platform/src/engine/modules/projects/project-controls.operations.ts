@@ -15,7 +15,6 @@ import { createProjectTransferOperations } from "./project-transfer.operations";
 import { appProjectOperations } from "../apps/app.operations";
 import { createProjectClusterOperations } from "./project-cluster.operations";
 import { createAutoscaleOperations } from "./autoscale/project-autoscale.operations";
-import { suspendAutoscaleOnOverride } from "./autoscale/project-autoscale.operations";
 import { createClusterDatabaseOperations } from "./cluster-database.operations";
 import { createClusterVolumeOperations } from "./cluster-volume.operations";
 import { retryProjectRoutingOperation } from "./project-routing-retry.operations";

@@ -1359,6 +1359,16 @@ function pickResolver(spec: TableSpec, scope: SubgraphScope): ScopeResolver | nu
  */
 export function stripInstanceRefsInPlace(tables: DatabaseDump["tables"]): void {
   for (const row of tables.route_protection ?? []) row.appliedRevision = null;
+  // An application import carries policy settings, not permission to resume
+  // the source controller's pending writes against its old Kubernetes objects.
+  for (const row of tables.project_autoscale_policy ?? []) {
+    row.enabled = 0;
+    row.pendingScale = null;
+    row.nextAttemptAt = null;
+    row.failureCount = 0;
+    row.suspendedAt = null;
+    row.suspendedReason = null;
+  }
   for (const [table, columns] of Object.entries(INSTANCE_SCOPED_REFS)) {
     const rows = tables[table];
     if (!rows || rows.length === 0) continue;

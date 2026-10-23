@@ -31,7 +31,7 @@ export const ProjectAutoscalePolicySchema = Type.Object({
   maxReplicas: Type.Integer({ minimum: 1, maximum: 100 }),
   /** Replica step per tick (±N), so a spike ramps one bounded step at a time. */
   stepSize: Type.Integer({ minimum: 1, maximum: 10 }),
-  /** Cooldown between applied steps, measured from rollout completion. */
+  /** Cooldown between applied steps, measured from the accepted change; the rollout must also be ready. */
   cooldownSeconds: Type.Integer({ minimum: 30 }),
   /** Tick gap multiplier after failures (exponential backoff ceiling). */
   suspendAfterFailures: Type.Integer({ minimum: 1, maximum: 10 }),
@@ -55,7 +55,7 @@ export const SetProjectAutoscalePolicySchema = Type.Object(
     suspendAfterFailures: Type.Integer({ minimum: 1, maximum: 10 }),
     /** Operator confirms a suspended policy should resume ownership. */
     rearm: Type.Optional(Type.Literal(true)),
-    expectedUpdatedAt: Type.String(),
+    expectedUpdatedAt: Type.Union([Type.String(), Type.Null()]),
   },
   { additionalProperties: false },
 );

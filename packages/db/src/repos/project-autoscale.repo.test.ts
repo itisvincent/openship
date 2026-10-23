@@ -9,8 +9,8 @@ import { createAutoscaleRepo } from "./project-autoscale.repo";
 const client = new PGlite("memory://");
 const db = drizzle(client, { schema });
 const autoscale = createAutoscaleRepo(db);
-let orgId = "org";
-let projectId = "proj";
+const orgId = "org";
+const projectId = "proj";
 
 const POLICY = {
   enabled: true,
@@ -61,7 +61,7 @@ describe("repos.autoscale", () => {
     const again = await autoscale.save(projectId, { ...POLICY, targetCpuPercent: 60 });
     expect(again.id).toBe(saved.id);
     expect(again.targetCpuPercent).toBe(60);
-    const list = await autoscale.listEnabled();
+    const list = await autoscale.listDue();
     expect(list).toHaveLength(1);
   });
 
@@ -73,7 +73,7 @@ describe("repos.autoscale", () => {
     // A second suspend keeps the FIRST and most human-relevant reason.
     await autoscale.suspend(projectId, "something else");
     expect((await autoscale.get(projectId))?.suspendedReason).toBe("a human touched replicas");
-    await autoscale.rearm(projectId);
+    await autoscale.save(projectId, { ...POLICY, rearm: true });
     const rearmed = await autoscale.get(projectId);
     expect(rearmed?.suspendedAt).toBeNull();
     expect(rearmed?.suspendedReason).toBeNull();
@@ -124,12 +124,12 @@ describe("repos.autoscale", () => {
   it("disable clears pending backoff and suspension intent", async () => {
     await autoscale.save(projectId, POLICY);
     await autoscale.suspend(projectId, "reason");
-    await autoscale.disable(projectId);
+    await autoscale.save(projectId, { ...POLICY, enabled: false });
     const row = await autoscale.get(projectId);
     expect(row?.enabled).toBe(0);
     expect(row?.suspendedAt).toBeNull();
     expect(row?.nextAttemptAt).toBeNull();
-    expect(await autoscale.listEnabled()).toHaveLength(0);
+    expect(await autoscale.listDue()).toHaveLength(0);
   });
 
   it("backoff grows exponentially and a failure streak suspends", async () => {
@@ -150,18 +150,32 @@ describe("repos.autoscale", () => {
     expect(row?.suspendedReason).toContain("3 times in a row");
     // The tick's recordSuccess unblocks again on success — but only via rearm
     // once suspended, matching the dashboard handshake.
-    await autoscale.rearm(projectId);
+    await autoscale.save(projectId, { ...POLICY, rearm: true });
     await autoscale.recordSuccess(projectId);
     row = await autoscale.get(projectId);
     expect(row?.failureCount).toBe(0);
     expect(row?.nextAttemptAt).toBeNull();
   });
 
+  it("rejects a stale create from a second tab and does not churn the configuration revision on healthy ticks", async () => {
+    const saved = await autoscale.save(projectId, { ...POLICY, expectedUpdatedAt: null });
+    await expect(
+      autoscale.save(projectId, { ...POLICY, expectedUpdatedAt: null }),
+    ).rejects.toMatchObject({ code: "AUTOSCALE_POLICY_CONFLICT" });
+    await autoscale.recordSuccess(projectId);
+    await autoscale.recordFailure(projectId, 3);
+    await autoscale.recordSuccess(projectId);
+    expect((await autoscale.get(projectId))!.updatedAt).toEqual(saved.updatedAt);
+    await expect(
+      autoscale.save(projectId, { ...POLICY, expectedUpdatedAt: saved.updatedAt.toISOString() }),
+    ).resolves.toMatchObject({ enabled: 1 });
+  });
+
   it("keeps a bounded event trail and finds the last applied step", async () => {
     await autoscale.save(projectId, POLICY);
-    for (let idx = 0; idx < 12; idx++) {
+    for (let idx = 0; idx < 105; idx++) {
       await autoscale.insertEvent(projectId, {
-        createdAt: new Date(Date.now() + idx).toISOString(),
+        createdAt: new Date(Date.now() - 10_000 + idx).toISOString(),
         action: "hold",
         fromReplicas: 2,
         toReplicas: null,
@@ -182,7 +196,7 @@ describe("repos.autoscale", () => {
       { cooldownSeconds: 120 },
     );
     const events = await autoscale.listEvents(projectId);
-    expect(events).toHaveLength(13);
+    expect(events).toHaveLength(100);
     expect(events[0].action).toBe("scale_up");
     const lastScale = await autoscale.lastScaleEvent(projectId);
     expect(lastScale?.action).toBe("scale_up");

@@ -643,6 +643,61 @@ describe("Kubernetes workload lifecycle", () => {
     await expect(runtime.scaleInPlace(result.containerId!, 0)).rejects.toThrow();
     await expect(runtime.scaleInPlace(result.containerId!, 101)).rejects.toThrow();
   });
+  it("guards an observed generation and persists the operation receipt without waiting for rollout", async () => {
+    const { runtime, watch } = setup();
+    const deployed = await runtime.deploy(config());
+    const before = await runtime.status(deployed.containerId!);
+    const watches = watch.mock.calls.length;
+    const precondition = { uid: before.scaling!.uid, generation: before.generation, replicas: before.desired, operationId: "operation-1" };
+    await runtime.scaleInPlace(deployed.containerId!, 4, precondition);
+    expect(watch.mock.calls).toHaveLength(watches);
+    const after = await runtime.status(deployed.containerId!);
+    expect(after.scaling).toMatchObject({ operationId: "operation-1", cpuLimitMillicores: 500 });
+    await expect(runtime.scaleInPlace(deployed.containerId!, 5, precondition)).rejects.toMatchObject({ code: "CLUSTER_WORKLOAD_CONFLICT" });
+    expect((await runtime.status(deployed.containerId!)).desired).toBe(4);
+  });
+
+  it("does not overwrite an operator during Kubernetes resource-version retry", async () => {
+    const { runtime, request, resources } = setup();
+    const deployed = await runtime.deploy(config());
+    const before = await runtime.status(deployed.containerId!);
+    const original = request.getMockImplementation()!;
+    let conflict = true;
+    request.mockImplementation(async (method, path, body) => {
+      if (method === "PATCH" && path.includes("/deployments/") && conflict) {
+        conflict = false;
+        const current = resources.get(path)!;
+        current.spec.replicas = 7;
+        current.metadata.generation!++;
+        throw new KubernetesApiError(409, "operator changed replicas");
+      }
+      return original(method, path, body);
+    });
+    await expect(runtime.scaleInPlace(deployed.containerId!, 4, {
+      uid: before.scaling!.uid, generation: before.generation, replicas: before.desired, operationId: "operation-2",
+    })).rejects.toMatchObject({ code: "CLUSTER_WORKLOAD_CONFLICT" });
+    expect((await runtime.status(deployed.containerId!)).desired).toBe(7);
+  });
+
+  it("keeps missing and malformed container CPU readings unknown, never zero", async () => {
+    const { runtime, request } = setup();
+    const deployed = await runtime.deploy(config());
+    const original = request.getMockImplementation()!;
+    request.mockImplementation(async (method, path, body) => {
+      if (path.startsWith("/apis/metrics.k8s.io/")) return { items: [
+        { metadata: { name: "partial" }, timestamp: "2026-10-23T12:00:00Z", containers: [{ name: "app", usage: { cpu: "100m" } }, { name: "sidecar", usage: {} }] },
+        { metadata: { name: "invalid" }, containers: [{ name: "app", usage: { cpu: "broken" } }] },
+        { metadata: { name: "empty" }, containers: [] },
+        { metadata: { name: "zero" }, containers: [{ name: "app", usage: { cpu: "0" } }] },
+      ] } as any;
+      return original(method, path, body);
+    });
+    const metrics = await runtime.podMetrics(deployed.containerId!);
+    expect(metrics.pods.map((pod) => [pod.name, pod.cpuMillicores])).toEqual([
+      ["empty", null], ["invalid", null], ["partial", null], ["zero", 0],
+    ]);
+    expect(metrics.pods.find((pod) => pod.name === "partial")!.timestamp).toBe("2026-10-23T12:00:00Z");
+  });
   it("fails closed when the cluster metrics source is missing", async () => {
     const { runtime } = setup();
     const result = await runtime.deploy(config());

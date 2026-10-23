@@ -5,15 +5,23 @@ import {
   integer,
   timestamp,
   jsonb,
-  uniqueIndex,
+  unique,
   index,
   check,
 } from "drizzle-orm/pg-core";
-import type { AutoscaleEvent } from "@repo/core";
+import type { AutoscaleEvent, ClusterScalePrecondition } from "@repo/core";
 import { project } from "./project";
 
-/** One autoscaling policy per project. A NULL suspendedAt means the autoscaler
- * owns the replica count; any other actor writes a reason before resuming is
+export interface AutoscalePendingScale extends ClusterScalePrecondition {
+  deploymentId: string;
+  clusterId: string;
+  projectUpdatedAt: string;
+  toReplicas: number;
+  event: Omit<AutoscaleEvent, "id">;
+  cooldownSeconds: number;
+}
+
+/** One autoscaling policy per project. Only an enabled policy with NULL suspendedAt owns the replica count; any other actor writes a reason before resuming is
  * allowed through the dashboard's re-arm. */
 export const projectAutoscalePolicy = pgTable(
   "project_autoscale_policy",
@@ -36,12 +44,17 @@ export const projectAutoscalePolicy = pgTable(
     failureCount: integer("failure_count").notNull().default(0),
     suspendedAt: timestamp("suspended_at"),
     suspendedReason: text("suspended_reason"),
+    pendingScale: jsonb("pending_scale").$type<AutoscalePendingScale | null>(),
     lastDecision: jsonb("last_decision").$type<AutoscaleEvent | null>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("project_autoscale_policy_project_idx").on(table.projectId),
+    unique("project_autoscale_policy_project_id_unique").on(table.projectId),
+    check(
+      "project_autoscale_policy_failures_check",
+      sql`${table.suspendAfterFailures} BETWEEN 1 AND 10`,
+    ),
     check("project_autoscale_policy_cpu_check", sql`${table.targetCpuPercent} BETWEEN 1 AND 100`),
     check(
       "project_autoscale_policy_bounds_check",
@@ -65,9 +78,7 @@ export const projectAutoscaleEvent = pgTable(
     projectId: text("project_id")
       .notNull()
       .references(() => project.id, { onDelete: "cascade" }),
-    action: text("action")
-      .$type<AutoscaleEvent["action"]>()
-      .notNull(),
+    action: text("action").$type<AutoscaleEvent["action"]>().notNull(),
     fromReplicas: integer("from_replicas").notNull(),
     toReplicas: integer("to_replicas"),
     observedCpuPercent: integer("observed_cpu_percent"),

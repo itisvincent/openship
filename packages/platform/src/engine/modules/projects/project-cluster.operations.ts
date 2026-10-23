@@ -82,9 +82,9 @@ export function createProjectClusterOperations(
         result.status = await withDeploymentRuntime(active, async (runtime) => {
           if (!runtime.supports("clusterStatus") || !runtime.status)
             throw new Error("The active release does not use the cluster runtime.");
-          // Observed per-instance usage rides along with the status read when
-          // the runtime provides it; an unavailable metrics source stays null.
-          if (runtime.supports("podMetrics") && runtime.podMetrics && active.containerId !== "compose") {
+          // Only opted-in policies query metrics; ordinary cluster reads keep their existing cost.
+          if (runtime.supports("podMetrics") && runtime.podMetrics && active.containerId !== "compose" &&
+            (await repos.autoscale.get(id))?.enabled) {
             try {
               result.metrics = await runtime.podMetrics(active.containerId!);
             } catch (metricsError) {
@@ -218,7 +218,7 @@ export function createProjectClusterOperations(
           input.clusterId ? input.config! : null,
           input.expectedUpdatedAt,
         );
-        if (project.clusterId && input.clusterId === project.clusterId) {
+        if (project.clusterId) {
           // A human moved the target (including its replica count). The
           // autoscaler stops owning replicas until the operator re-arms it.
           await suspendAutoscaleOnOverride(

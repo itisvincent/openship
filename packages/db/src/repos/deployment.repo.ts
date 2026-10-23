@@ -354,20 +354,6 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
       }).where(and(eq(deployment.id, deploymentId), eq(deployment.organizationId, organizationId), eq(deployment.status, "queued")));
     },
 
-    /** Autoscaler fast path bookkeeping: reflect the in-place replica change on
-     *  the active release's saved snapshot, so dashboards and the read model do
-     *  not report a pre-scale count until the next deploy. */
-    async patchMetaReplicas(deploymentId: string, replicas: number): Promise<void> {
-      await db
-        .update(deployment)
-        .set({
-          meta: sql`jsonb_set(
-            jsonb_set(coalesce(${deployment.meta}, '{}'::jsonb), '{clusterConfig,replicas}', ${replicas}::text::jsonb),
-            '{clusterConfigUpdatedBy}', '"autoscaler"'::jsonb)`,
-        })
-        .where(eq(deployment.id, deploymentId));
-    },
-
     /** Legacy leases only. Activity-backed capacity is counted by listReservations.
      * Released activity slots must never reappear as legacy execution leases. */
     async countActiveCloudBuilds(workspaceId: string, organizationId: string): Promise<number> {
